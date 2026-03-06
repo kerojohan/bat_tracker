@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+
+# Packaging
+*.egg-info/
+dist/
+build/
+
+# Local outputs and heavy data
+out/
+out_*/
+*.mp4
+*.avi
+*.mov
+*.mkv
+*.mat
+*.png
+
+# Keep project docs/configs tracked even with png ignored
+!README.md
+!config*.yaml

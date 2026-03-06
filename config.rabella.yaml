@@ -1,0 +1,23 @@
+background:
+  sample_frames: 300
+  uniform_sampling: true
+
+detection:
+  blur_kernel: 5
+  threshold_mode: otsu
+  diff_threshold: 16
+  otsu_offset: -7
+  morph_open: 1
+  morph_close: 3
+  min_area: 4
+  max_area: 2500
+
+tracking:
+  max_distance: 80.0
+  max_missed: 20
+  min_track_length: 1
+
+output:
+  overlay_line_thickness: 2
+  overlay_start_radius: 5
+  overlay_alpha: 1.0
