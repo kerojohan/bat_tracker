@@ -10,12 +10,15 @@ from statistics import mean
 from typing import Dict, List
 
 import cv2
+import numpy as np
 
 from .background import compute_background_median
 from .config import load_config
 from .detection import detect_foreground_blobs
 from .render import render_tracks_overlay
 from .tracker import GreedyTracker, TrackPoint
+from .valid_region import load_image as load_valid_region_image
+from .valid_region import run_valid_region
 from .video import iter_gray_frames, read_video_meta
 
 
@@ -163,6 +166,35 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     )
     background_path = out_dir / "background.png"
     cv2.imwrite(str(background_path), background)
+    valid_mask: np.ndarray | None = None
+    valid_region_meta: Dict = {"enabled": False}
+    valid_region_outputs: Dict[str, str] = {}
+
+    valid_region_cfg = cfg.get("valid_region", {})
+    valid_region_enabled = bool(valid_region_cfg.get("enabled", False))
+    if valid_region_enabled:
+        valid_input = str(valid_region_cfg.get("input_image", "")).strip()
+        if valid_input:
+            valid_image = load_valid_region_image(valid_input)
+        else:
+            valid_image = background
+
+        valid_subdir = str(valid_region_cfg.get("output_subdir", "valid_region"))
+        valid_output_dir = out_dir / valid_subdir
+        valid_region_meta = run_valid_region(
+            image=valid_image,
+            output_dir=valid_output_dir,
+            config=valid_region_cfg,
+        )
+        mask_path = valid_output_dir / "mask.png"
+        valid_mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+        if valid_mask is None:
+            raise RuntimeError(f"Could not load valid-region mask from: {mask_path}")
+        valid_region_outputs = {
+            "valid_region_mask_png": str(mask_path.resolve()),
+            "valid_region_overlay_png": str((valid_output_dir / "overlay.png").resolve()),
+            "valid_region_profile_png": str((valid_output_dir / "profile.png").resolve()),
+        }
 
     tracker = GreedyTracker(
         max_distance=float(cfg["tracking"]["max_distance"]),
@@ -177,7 +209,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     suppressed_burst_frames = 0
 
     for frame_idx, gray in iter_gray_frames(input_video):
-        dets = detect_foreground_blobs(gray, background, cfg["detection"])
+        dets = detect_foreground_blobs(gray, background, cfg["detection"], valid_mask=valid_mask)
         if burst_gate is not None and not burst_gate.should_keep(frame_idx, len(dets)):
             dets = []
             suppressed_burst_frames += 1
@@ -210,6 +242,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "height": meta.height,
         },
         "parameters": cfg,
+        "valid_region": valid_region_meta,
         "metrics": {
             **_build_metrics(filtered_points, frame_processed),
             "frames_suppressed_temporal_burst": suppressed_burst_frames,
@@ -218,6 +251,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "background_png": str(background_path.resolve()),
             "tracks_csv": str(tracks_csv_path.resolve()),
             "tracks_overlay_png": str(overlay_path.resolve()),
+            **valid_region_outputs,
         },
     }
 

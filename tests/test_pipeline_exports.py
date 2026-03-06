@@ -34,6 +34,9 @@ def test_pipeline_exports_files(monkeypatch, tmp_path: Path):
     meta = pipeline.run_pipeline("fake.mp4", str(out_dir), config_path=None)
 
     assert (out_dir / "background.png").exists()
+    assert (out_dir / "valid_region" / "mask.png").exists()
+    assert (out_dir / "valid_region" / "overlay.png").exists()
+    assert (out_dir / "valid_region" / "profile.png").exists()
     assert (out_dir / "tracks.csv").exists()
     assert (out_dir / "tracks_overlay.png").exists()
     assert (out_dir / "meta.json").exists()
@@ -50,6 +53,11 @@ def test_pipeline_exports_files(monkeypatch, tmp_path: Path):
 
     assert payload["video"]["video_id"] == "fake"
     assert payload["metrics"]["frames_processed"] == 6
+    assert payload["valid_region"]["enabled"] is True
+    assert payload["valid_region"]["x_start"] < payload["valid_region"]["x_end"]
+    assert payload["outputs"]["valid_region_mask_png"].endswith("valid_region/mask.png")
+    assert payload["outputs"]["valid_region_overlay_png"].endswith("valid_region/overlay.png")
+    assert payload["outputs"]["valid_region_profile_png"].endswith("valid_region/profile.png")
     assert meta["outputs"]["tracks_csv"].endswith("tracks.csv")
 
 

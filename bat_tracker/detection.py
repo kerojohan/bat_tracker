@@ -18,7 +18,12 @@ class Detection:
     area: float
 
 
-def detect_foreground_blobs(frame_gray: np.ndarray, background: np.ndarray, cfg: dict) -> List[Detection]:
+def detect_foreground_blobs(
+    frame_gray: np.ndarray,
+    background: np.ndarray,
+    cfg: dict,
+    valid_mask: np.ndarray | None = None,
+) -> List[Detection]:
     blur_kernel = int(cfg.get("blur_kernel", 5))
     threshold_mode = str(cfg.get("threshold_mode", "fixed")).lower()
     diff_threshold = int(cfg.get("diff_threshold", 25))
@@ -79,6 +84,17 @@ def detect_foreground_blobs(frame_gray: np.ndarray, background: np.ndarray, cfg:
         x, y, w, h = cv2.boundingRect(contour)
         cx = float(x + w / 2.0)
         cy = float(y + h / 2.0)
+        if valid_mask is not None:
+            xi = int(round(cx))
+            yi = int(round(cy))
+            if (
+                yi < 0
+                or yi >= valid_mask.shape[0]
+                or xi < 0
+                or xi >= valid_mask.shape[1]
+                or valid_mask[yi, xi] == 0
+            ):
+                continue
         if roi_x_min >= 0 and cx < roi_x_min:
             continue
         if roi_x_max >= 0 and cx > roi_x_max:

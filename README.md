@@ -3,6 +3,7 @@
 Proyecto Python para Linux orientado a CPU que procesa videos IR monocromos de cueva y genera:
 
 - `background.png`: fondo por mediana temporal
+- `valid_region/`: mascara vertical de zona valida por iluminacion horizontal
 - `tracks.csv`: trayectorias 2D por objeto
 - `tracks_overlay.png`: trayectorias sobre el fondo
 - `meta.json`: parametros y metricas de ejecucion
@@ -37,6 +38,17 @@ Tambien puede ejecutarse sin instalar entrypoint:
 python -m bat_tracker.cli --input /path/video.mp4 --output /path/out_dir --config /path/config.yaml
 ```
 
+Generacion standalone de mascara vertical valida:
+
+```bash
+python -m bat_tracker.valid_region \
+  --input /path/out_dir/background.png \
+  --output /path/out_dir/valid_region \
+  --blur-kernel-size 151 \
+  --threshold-ratio 0.45 \
+  --safety-margin 10
+```
+
 ## Entradas
 
 - `--input` (obligatorio): ruta a video IR monocromo, por ejemplo `.mp4`.
@@ -54,9 +66,13 @@ Ejemplos de configuracion incluidos:
 Se escriben en la carpeta indicada por `--output`:
 
 - `background.png`: fondo estimado por mediana temporal.
+- `valid_region/mask.png`: mascara binaria vertical (255 zona valida, 0 laterales invalidos).
+- `valid_region/overlay.png`: debug visual de banda valida sobre la imagen.
+- `valid_region/profile.png`: perfil horizontal (raw + suavizado + cortes).
 - `tracks.csv`: trayectorias 2D por deteccion y frame.
 - `tracks_overlay.png`: trayectorias dibujadas sobre `background.png`.
 - `meta.json`: metadatos del video, parametros efectivos y metricas de ejecucion.
+  - incluye bloque `valid_region` con `x_start`, `x_end`, `width` y `method`.
 
 ## Formato de tracks.csv
 
@@ -73,7 +89,8 @@ Columnas exactas:
 5. Filtrado de blobs por area minima/maxima.
 6. Tracking 2D frame a frame con asignacion greedy por distancia maxima y prediccion por velocidad para reducir cortes.
 7. Export de `tracks.csv` y render final `tracks_overlay.png` (color por track, primer punto mas grande).
-8. Export de `meta.json` con parametros, metadatos y metricas.
+8. Si `valid_region.enabled`, calculo de banda vertical valida desde iluminacion horizontal y guardado en `valid_region/*`.
+9. Export de `meta.json` con parametros, metadatos y metricas.
 
 ## Configuracion
 
@@ -98,6 +115,13 @@ Usa `config.yaml.example` como base.
   - `tracking.min_track_displacement`: desplazamiento neto minimo (pixeles)
   - `tracking.min_track_path_length`: recorrido acumulado minimo (pixeles)
   - `tracking.min_track_straightness`: rectitud minima `desplazamiento/recorrido` (0..1)
+- `valid_region.*`: mascara vertical valida para eliminar vignette lateral IR sin recortar interior oscuro de cueva
+  - `valid_region.enabled`: activa/desactiva etapa
+  - `valid_region.input_image`: si se define, usa esta imagen en vez de `background.png`
+  - `valid_region.blur_kernel_size` y `valid_region.profile_smooth_window`: deben ser impares
+  - `valid_region.threshold_ratio`: fraccion del pico del perfil para definir region valida
+  - `valid_region.safety_margin`: recorte adicional en pixeles por lado
+  - `valid_region.min_region_width_ratio`: evita regiones absurdamente estrechas
 - `output.*`: estilo del overlay
 
 ## Ajuste rapido para mejorar recall/continuidad

@@ -40,6 +40,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "min_track_path_length": 18.0,
         "min_track_straightness": 0.0,
     },
+    "valid_region": {
+        "enabled": True,
+        "input_image": "",
+        "blur_kernel_size": 151,
+        "profile_smooth_window": 31,
+        "threshold_ratio": 0.45,
+        "safety_margin": 10,
+        "min_region_width_ratio": 0.35,
+        "output_subdir": "valid_region",
+    },
     "output": {
         "overlay_line_thickness": 2,
         "overlay_start_radius": 5,
@@ -60,7 +70,9 @@ def _deep_update(base: Dict[str, Any], update: Dict[str, Any]) -> Dict[str, Any]
 
 def load_config(path: str | Path | None) -> Dict[str, Any]:
     if path is None:
-        return deepcopy(DEFAULT_CONFIG)
+        cfg = deepcopy(DEFAULT_CONFIG)
+        _validate_config(cfg)
+        return cfg
 
     cfg_path = Path(path)
     if not cfg_path.exists():
@@ -72,4 +84,17 @@ def load_config(path: str | Path | None) -> Dict[str, Any]:
     if not isinstance(user_cfg, dict):
         raise ValueError("Config must be a YAML mapping/dictionary")
 
-    return _deep_update(DEFAULT_CONFIG, user_cfg)
+    merged = _deep_update(DEFAULT_CONFIG, user_cfg)
+    _validate_config(merged)
+    return merged
+
+
+def _validate_config(cfg: Dict[str, Any]) -> None:
+    valid_region = cfg.get("valid_region", {})
+    if not isinstance(valid_region, dict):
+        raise ValueError("valid_region config must be a mapping/dictionary")
+
+    for field in ("blur_kernel_size", "profile_smooth_window"):
+        value = int(valid_region.get(field, 0))
+        if value < 1 or value % 2 == 0:
+            raise ValueError(f"valid_region.{field} must be a positive odd integer, got: {value}")

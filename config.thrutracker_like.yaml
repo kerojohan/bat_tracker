@@ -23,6 +23,16 @@ tracking:
   min_track_path_length: 30.0
   min_track_straightness: 0.1
 
+valid_region:
+  enabled: true
+  input_image: ""
+  blur_kernel_size: 151
+  profile_smooth_window: 31
+  threshold_ratio: 0.45
+  safety_margin: 10
+  min_region_width_ratio: 0.35
+  output_subdir: valid_region
+
 output:
   overlay_line_thickness: 2
   overlay_start_radius: 5
