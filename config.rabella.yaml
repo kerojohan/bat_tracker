@@ -11,11 +11,17 @@ detection:
   morph_close: 3
   min_area: 4
   max_area: 2500
+  max_global_intensity_shift: -1.0
+  max_foreground_ratio: -1.0
+  max_detections_per_frame: 0
 
 tracking:
   max_distance: 80.0
   max_missed: 20
   min_track_length: 1
+  min_track_displacement: 12.0
+  min_track_path_length: 20.0
+  min_track_straightness: 0.0
 
 output:
   overlay_line_thickness: 2

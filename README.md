@@ -84,7 +84,20 @@ Usa `config.yaml.example` como base.
 - `detection.*`: parametros de blur, threshold, morfologia y area
   - `detection.threshold_mode`: `fixed` o `otsu`
   - `detection.otsu_offset`: ajuste fino sobre umbral Otsu (negativo = mas sensible)
-- `tracking.*`: distancia maxima de asociacion, tolerancia a frames perdidos y longitud minima de track
+  - `detection.max_global_intensity_shift`: descarta frame si el brillo medio difiere demasiado del fondo (`-1` desactiva)
+  - `detection.max_foreground_ratio`: descarta frame si el porcentaje de foreground es demasiado alto (`-1` desactiva)
+  - `detection.max_detections_per_frame`: descarta frame si supera este numero de blobs (`0` desactiva)
+  - `detection.roi_x_min/roi_x_max/roi_y_min/roi_y_max`: limita detecciones a una ROI por centroide (`-1` desactiva cada limite)
+  - `detection.temporal_burst_*`: gate temporal por rafagas de detecciones (desactiva con `0`)
+    - `temporal_burst_min_detections`: umbral de detecciones altas por frame
+    - `temporal_burst_window_frames`: tamano de ventana temporal
+    - `temporal_burst_trigger_frames`: frames altos dentro de ventana para activar suppression
+    - `temporal_burst_cooldown_frames`: frames suprimidos tras activacion
+- `tracking.*`: distancia maxima de asociacion, tolerancia a frames perdidos y filtros minimos por trayectoria
+  - `tracking.min_track_length`: minimo de puntos por trayectoria
+  - `tracking.min_track_displacement`: desplazamiento neto minimo (pixeles)
+  - `tracking.min_track_path_length`: recorrido acumulado minimo (pixeles)
+  - `tracking.min_track_straightness`: rectitud minima `desplazamiento/recorrido` (0..1)
 - `output.*`: estilo del overlay
 
 ## Ajuste rapido para mejorar recall/continuidad
@@ -95,6 +108,15 @@ Si faltan sujetos o aparecen tracks cortados:
 2. subir `tracking.max_missed` (ej. `15-25`)
 3. bajar `detection.min_area` (ej. `4-8`)
 4. usar `detection.threshold_mode: otsu` y ajustar `detection.otsu_offset` (ej. `-6` mas sensible)
+
+Si aparecen demasiados tracks de ruido:
+
+1. subir `tracking.min_track_displacement` (ej. `20-40`)
+2. subir `tracking.min_track_path_length` (ej. `30-80`)
+3. subir `tracking.min_track_straightness` (ej. `0.1-0.3`)
+4. subir `background.sample_frames` (ej. `100-300`) para estabilizar `background.png`
+5. activar gates anti-flicker en `detection`: `max_global_intensity_shift`, `max_foreground_ratio`, `max_detections_per_frame`
+6. activar gate temporal `detection.temporal_burst_*` para suprimir rafagas cortas de ruido
 
 ## Tests minimos
 

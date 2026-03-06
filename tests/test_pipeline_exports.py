@@ -51,3 +51,23 @@ def test_pipeline_exports_files(monkeypatch, tmp_path: Path):
     assert payload["video"]["video_id"] == "fake"
     assert payload["metrics"]["frames_processed"] == 6
     assert meta["outputs"]["tracks_csv"].endswith("tracks.csv")
+
+
+def test_temporal_burst_gate_triggers_and_cooldown():
+    gate = pipeline.TemporalBurstGate(
+        min_detections=5,
+        window_frames=4,
+        trigger_frames=2,
+        cooldown_frames=3,
+    )
+
+    # No trigger yet.
+    assert gate.should_keep(0, 1) is True
+    assert gate.should_keep(1, 5) is True
+    # Second hit in window triggers suppression.
+    assert gate.should_keep(2, 6) is False
+    # Cooldown remains suppressed.
+    assert gate.should_keep(3, 1) is False
+    assert gate.should_keep(4, 1) is False
+    # After cooldown, normal frames are allowed again.
+    assert gate.should_keep(5, 1) is True

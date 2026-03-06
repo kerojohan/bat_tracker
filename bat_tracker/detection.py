@@ -27,6 +27,13 @@ def detect_foreground_blobs(frame_gray: np.ndarray, background: np.ndarray, cfg:
     morph_close = int(cfg.get("morph_close", 5))
     min_area = float(cfg.get("min_area", 10))
     max_area = float(cfg.get("max_area", 5000))
+    max_global_intensity_shift = float(cfg.get("max_global_intensity_shift", -1))
+    max_foreground_ratio = float(cfg.get("max_foreground_ratio", -1))
+    max_detections_per_frame = int(cfg.get("max_detections_per_frame", 0))
+    roi_x_min = float(cfg.get("roi_x_min", -1))
+    roi_x_max = float(cfg.get("roi_x_max", -1))
+    roi_y_min = float(cfg.get("roi_y_min", -1))
+    roi_y_max = float(cfg.get("roi_y_max", -1))
 
     if blur_kernel > 1 and blur_kernel % 2 == 1:
         frame_proc = cv2.GaussianBlur(frame_gray, (blur_kernel, blur_kernel), 0)
@@ -51,6 +58,17 @@ def detect_foreground_blobs(frame_gray: np.ndarray, background: np.ndarray, cfg:
         k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morph_close, morph_close))
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, k_close)
 
+    if max_global_intensity_shift >= 0:
+        frame_mean = float(np.mean(frame_proc))
+        bg_mean = float(np.mean(bg_proc))
+        if abs(frame_mean - bg_mean) > max_global_intensity_shift:
+            return []
+
+    if max_foreground_ratio > 0:
+        fg_ratio = float(np.count_nonzero(binary)) / float(binary.size)
+        if fg_ratio > max_foreground_ratio:
+            return []
+
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     detections: List[Detection] = []
@@ -61,6 +79,14 @@ def detect_foreground_blobs(frame_gray: np.ndarray, background: np.ndarray, cfg:
         x, y, w, h = cv2.boundingRect(contour)
         cx = float(x + w / 2.0)
         cy = float(y + h / 2.0)
+        if roi_x_min >= 0 and cx < roi_x_min:
+            continue
+        if roi_x_max >= 0 and cx > roi_x_max:
+            continue
+        if roi_y_min >= 0 and cy < roi_y_min:
+            continue
+        if roi_y_max >= 0 and cy > roi_y_max:
+            continue
         detections.append(
             Detection(
                 x=cx,
@@ -72,5 +98,8 @@ def detect_foreground_blobs(frame_gray: np.ndarray, background: np.ndarray, cfg:
                 area=area,
             )
         )
+
+    if max_detections_per_frame > 0 and len(detections) > max_detections_per_frame:
+        return []
 
     return detections
