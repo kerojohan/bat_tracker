@@ -60,6 +60,7 @@ Ejemplos de configuracion incluidos:
 - `config.yaml.example` (base)
 - `config.thrutracker_like.yaml` (perfil similar a ThruTracker)
 - `config.rabella.yaml` (perfil mas sensible)
+- `config.out3_clean.yaml` (perfil limpio para escenas tipo out3 con menos ruido)
 
 ## Salidas
 
