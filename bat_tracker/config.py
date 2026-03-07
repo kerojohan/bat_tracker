@@ -36,6 +36,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "max_distance": 60.0,
         "max_missed": 12,
         "min_track_length": 1,
+        "min_track_duration_sec": 0.0,
         "min_track_displacement": 12.0,
         "min_track_path_length": 18.0,
         "min_track_straightness": 0.0,

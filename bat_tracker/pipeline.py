@@ -4,6 +4,7 @@ import csv
 import json
 from collections import Counter, defaultdict, deque
 from dataclasses import asdict
+from math import ceil
 from math import hypot
 from pathlib import Path
 from statistics import mean
@@ -114,8 +115,11 @@ def _path_length(track_points: List[TrackPoint]) -> float:
     return sum(hypot(p1.x - p0.x, p1.y - p0.y) for p0, p1 in zip(track_points[:-1], track_points[1:]))
 
 
-def _filter_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> List[TrackPoint]:
-    min_track_length = int(tracking_cfg.get("min_track_length", 1))
+def _filter_track_points(points: List[TrackPoint], tracking_cfg: Dict, fps: float) -> List[TrackPoint]:
+    min_track_length_cfg = int(tracking_cfg.get("min_track_length", 1))
+    min_track_duration_sec = float(tracking_cfg.get("min_track_duration_sec", 0.0))
+    min_track_length_from_sec = int(ceil(max(0.0, min_track_duration_sec) * max(1e-6, fps)))
+    min_track_length = max(min_track_length_cfg, min_track_length_from_sec)
     min_track_displacement = float(tracking_cfg.get("min_track_displacement", 0.0))
     min_track_path_length = float(tracking_cfg.get("min_track_path_length", 0.0))
     min_track_straightness = float(tracking_cfg.get("min_track_straightness", 0.0))
@@ -451,7 +455,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         all_points.extend(frame_points)
         frame_processed += 1
 
-    filtered_points = _filter_track_points(all_points, cfg["tracking"])
+    filtered_points = _filter_track_points(all_points, cfg["tracking"], meta.fps)
     filtered_points, merges_applied = _auto_merge_track_points(filtered_points, cfg["tracking"])
 
     tracks_csv_path = out_dir / "tracks.csv"

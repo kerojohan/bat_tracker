@@ -9,7 +9,7 @@ detection:
   otsu_offset: 0
   morph_open: 3
   morph_close: 3
-  min_area: 20
+  min_area: 25
   max_area: 50000
   max_global_intensity_shift: -1.0
   max_foreground_ratio: 0.04
@@ -30,6 +30,7 @@ tracking:
   min_track_displacement: 20.0
   min_track_path_length: 28.0
   min_track_straightness: 0.08
+  min_track_duration_sec: 0.4
   auto_merge_suggested: false
   merge_max_gap_frames: 8
   merge_max_endpoint_distance: 80.0

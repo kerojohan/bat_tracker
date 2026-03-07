@@ -115,6 +115,7 @@ Usa `config.yaml.example` como base.
     - `temporal_burst_cooldown_frames`: frames suprimidos tras activacion
 - `tracking.*`: distancia maxima de asociacion, tolerancia a frames perdidos y filtros minimos por trayectoria
   - `tracking.min_track_length`: minimo de puntos por trayectoria
+  - `tracking.min_track_duration_sec`: duracion minima en segundos (si se define, se combina con `min_track_length`)
   - `tracking.min_track_displacement`: desplazamiento neto minimo (pixeles)
   - `tracking.min_track_path_length`: recorrido acumulado minimo (pixeles)
   - `tracking.min_track_straightness`: rectitud minima `desplazamiento/recorrido` (0..1)
