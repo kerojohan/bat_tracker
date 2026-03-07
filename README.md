@@ -119,6 +119,8 @@ Usa `config.yaml.example` como base.
   - `tracking.min_track_displacement`: desplazamiento neto minimo (pixeles)
   - `tracking.min_track_path_length`: recorrido acumulado minimo (pixeles)
   - `tracking.min_track_straightness`: rectitud minima `desplazamiento/recorrido` (0..1)
+  - `tracking.require_start_or_end_in_valid_region`: conserva solo tracks que empiezan o acaban dentro de la mascara valida
+  - `tracking.valid_region_gate_dilate_px`: dilata la mascara valida en pixeles antes de aplicar el filtro inicio/fin
   - `tracking.auto_merge_suggested`: fusion automatica postproceso de tracks potencialmente duplicados
   - `tracking.merge_max_gap_frames` y `tracking.merge_max_endpoint_distance`: merge por handoff cercano (fin->inicio)
   - `tracking.merge_overlap_min_common_frames`: minimo de frames comunes para evaluar merge por solape
@@ -126,11 +128,16 @@ Usa `config.yaml.example` como base.
   - `tracking.merge_overlap_min_direction_cosine`: coherencia minima de direccion entre tracks solapados
 - `valid_region.*`: mascara vertical valida para eliminar vignette lateral IR sin recortar interior oscuro de cueva
   - `valid_region.enabled`: activa/desactiva etapa
+  - `valid_region.method`: `horizontal_illumination_profile` (default), `central_deep_layer` o `hybrid_deep_layer_profile` (perfil primero y profundidad despues, sin laterales)
+  - `valid_region.apply_to_detection`: aplica mascara en deteccion por frame (si no, se usa solo para filtros de track)
+  - `valid_region.hybrid_combine_mode`: `and`/`or` para combinar capa de profundidad + umbral por perfil
   - `valid_region.input_image`: si se define, usa esta imagen en vez de `background.png`
   - `valid_region.blur_kernel_size` y `valid_region.profile_smooth_window`: deben ser impares
   - `valid_region.threshold_ratio`: fraccion del pico del perfil para definir region valida
   - `valid_region.safety_margin`: recorte adicional en pixeles por lado
   - `valid_region.min_region_width_ratio`: evita regiones absurdamente estrechas
+  - `valid_region.depth_percentile/depth_morph_kernel/depth_min_area_ratio`: parametros del modo `central_deep_layer`
+  - `valid_region.depth_layer_percentiles` + `valid_region.depth_layer_dilate_px`: expansion no uniforme por capas de profundidad (listas emparejadas)
 - `output.*`: estilo del overlay
   - `output.overlay_draw_track_labels`: dibuja el numero de `track_id` junto al inicio de cada track
   - `output.overlay_draw_track_labels_at_end`: dibuja el numero de `track_id` al final del track

@@ -24,28 +24,33 @@ detection:
   temporal_burst_cooldown_frames: 24
 
 tracking:
-  max_distance: 100.0
-  max_missed: 3
+  max_distance: 120.0
+  max_missed: 6
   min_track_length: 6
   min_track_displacement: 20.0
   min_track_path_length: 28.0
   min_track_straightness: 0.08
-  min_track_duration_sec: 0.4
-  auto_merge_suggested: false
-  merge_max_gap_frames: 8
-  merge_max_endpoint_distance: 80.0
+  min_track_duration_sec: 0.1
+  auto_merge_suggested: true
+  merge_max_gap_frames: 6
+  merge_max_endpoint_distance: 60.0
   merge_overlap_min_common_frames: 3
   merge_overlap_max_mean_distance: 60.0
   merge_overlap_min_direction_cosine: 0.8
+  require_start_or_end_in_valid_region: true
+  valid_region_gate_dilate_px: 10
 
 valid_region:
   enabled: true
-  input_image: ""
+  method: hybrid_deep_layer_profile
+  apply_to_detection: false
+  hybrid_combine_mode: and
   blur_kernel_size: 151
-  profile_smooth_window: 31
-  threshold_ratio: 0.45
-  safety_margin: 10
-  min_region_width_ratio: 0.35
+  depth_percentile: 85.0
+  depth_morph_kernel: 9
+  depth_min_area_ratio: 0.02
+  depth_layer_percentiles: [82, 78, 72, 66]
+  depth_layer_dilate_px: [18, 14, 10, 6]
   output_subdir: valid_region
 
 output:

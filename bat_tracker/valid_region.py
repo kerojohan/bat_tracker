@@ -190,6 +190,182 @@ def save_debug_outputs(
         cv2.imwrite(str(profile_path), canvas)
 
 
+def _save_depth_debug_outputs(
+    original_image: np.ndarray,
+    depth_map: np.ndarray,
+    mask: np.ndarray,
+    output_dir: str | Path,
+) -> None:
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    mask_path = out_dir / "mask.png"
+    overlay_path = out_dir / "overlay.png"
+    profile_path = out_dir / "profile.png"
+
+    cv2.imwrite(str(mask_path), mask)
+
+    overlay = cv2.cvtColor(original_image, cv2.COLOR_GRAY2BGR)
+    tint = np.zeros_like(overlay)
+    tint[mask > 0] = (0, 255, 0)
+    overlay = cv2.addWeighted(overlay, 0.78, tint, 0.55, 0)
+
+    # Draw explicit contour so the valid region is visible even when tint contrast is low.
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay, contours, -1, (0, 255, 255), 2, lineType=cv2.LINE_AA)
+    cv2.imwrite(str(overlay_path), overlay)
+
+    depth_u8 = np.clip(depth_map, 0, 255).astype(np.uint8)
+    depth_vis = cv2.applyColorMap(depth_u8, cv2.COLORMAP_TURBO)
+    cv2.imwrite(str(profile_path), depth_vis)
+
+
+def _bbox_from_mask(mask: np.ndarray) -> Tuple[int, int]:
+    ys, xs = np.where(mask > 0)
+    if xs.size == 0:
+        return 0, max(1, mask.shape[1] - 1)
+    return int(xs.min()), int(xs.max())
+
+
+def _central_deep_layer_mask(
+    image: np.ndarray,
+    config: Dict,
+    constraint_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    illumination = estimate_illumination(image, int(config.get("blur_kernel_size", 151)))
+    depth_map = 255.0 - illumination.astype(np.float32)
+    percentile = float(config.get("depth_percentile", 85.0))
+    percentile = float(max(50.0, min(99.9, percentile)))
+    thr = float(np.percentile(depth_map, percentile))
+    binary = np.where(depth_map >= thr, 255, 0).astype(np.uint8)
+    if constraint_mask is not None:
+        binary = np.where((binary > 0) & (constraint_mask > 0), 255, 0).astype(np.uint8)
+
+    morph_k = _ensure_odd(int(config.get("depth_morph_kernel", 9)), "depth_morph_kernel")
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morph_k, morph_k))
+    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+
+    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+    if num_labels <= 1:
+        return binary
+
+    h, w = binary.shape[:2]
+    cx = w // 2
+    cy = h // 2
+    center_label = int(labels[cy, cx])
+    min_area_ratio = float(max(0.0, min(1.0, config.get("depth_min_area_ratio", 0.02))))
+    min_area = int(min_area_ratio * h * w)
+
+    selected_label = 0
+    if center_label > 0 and int(stats[center_label, cv2.CC_STAT_AREA]) >= min_area:
+        selected_label = center_label
+    else:
+        best_score = float("inf")
+        for label_id in range(1, num_labels):
+            area = int(stats[label_id, cv2.CC_STAT_AREA])
+            if area < max(1, min_area):
+                continue
+            x = int(stats[label_id, cv2.CC_STAT_LEFT])
+            ww = int(stats[label_id, cv2.CC_STAT_WIDTH])
+            comp_cx = x + ww / 2.0
+            score = abs(comp_cx - cx)
+            if score < best_score:
+                best_score = score
+                selected_label = label_id
+
+    if selected_label <= 0:
+        selected_label = 1 + int(np.argmax(stats[1:, cv2.CC_STAT_AREA]))
+
+    mask = np.where(labels == selected_label, 255, 0).astype(np.uint8)
+    mask = _expand_mask_by_depth_layers(mask, depth_map, config, constraint_mask=constraint_mask)
+    return mask
+
+
+def _as_float_list(value: object) -> list[float]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[float] = []
+    for item in value:
+        try:
+            out.append(float(item))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _as_int_list(value: object) -> list[int]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    out: list[int] = []
+    for item in value:
+        try:
+            out.append(int(item))
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
+def _expand_mask_by_depth_layers(
+    mask: np.ndarray,
+    depth_map: np.ndarray,
+    config: Dict,
+    constraint_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    percentiles = _as_float_list(config.get("depth_layer_percentiles", []))
+    dilate_px = _as_int_list(config.get("depth_layer_dilate_px", []))
+    if not percentiles or not dilate_px:
+        return mask
+
+    n = min(len(percentiles), len(dilate_px))
+    out_mask = mask.copy()
+    for percentile, px in zip(percentiles[:n], dilate_px[:n]):
+        p = float(max(0.0, min(99.9, percentile)))
+        radius = max(0, int(px))
+        thr = float(np.percentile(depth_map, p))
+        depth_layer = np.where(depth_map >= thr, 255, 0).astype(np.uint8)
+        if constraint_mask is not None:
+            depth_layer = np.where((depth_layer > 0) & (constraint_mask > 0), 255, 0).astype(np.uint8)
+
+        if radius > 0:
+            k = 2 * radius + 1
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+            expanded = cv2.dilate(out_mask, kernel, iterations=1)
+        else:
+            expanded = out_mask
+
+        if constraint_mask is not None:
+            expanded = np.where((expanded > 0) & (constraint_mask > 0), 255, 0).astype(np.uint8)
+        keep = np.logical_and(expanded > 0, depth_layer > 0)
+        out_mask[keep] = 255
+
+    return out_mask
+
+
+def _combine_masks(mask_a: np.ndarray, mask_b: np.ndarray, mode: str) -> np.ndarray:
+    mode = mode.strip().lower()
+    if mode == "or":
+        return np.where((mask_a > 0) | (mask_b > 0), 255, 0).astype(np.uint8)
+    # Default to AND for conservative valid-region selection.
+    return np.where((mask_a > 0) & (mask_b > 0), 255, 0).astype(np.uint8)
+
+
+def _horizontal_profile_mask(
+    image: np.ndarray,
+    config: Dict,
+) -> tuple[np.ndarray, int, int, np.ndarray, np.ndarray]:
+    illumination = estimate_illumination(image, int(config.get("blur_kernel_size", 151)))
+    raw_profile, smoothed_profile = horizontal_profile(illumination, int(config.get("profile_smooth_window", 31)))
+    x_start, x_end = detect_valid_region(
+        smoothed_profile=smoothed_profile,
+        threshold_ratio=float(config.get("threshold_ratio", 0.45)),
+        safety_margin=int(config.get("safety_margin", 10)),
+        min_region_width_ratio=float(config.get("min_region_width_ratio", 0.35)),
+    )
+    mask = build_mask(image.shape, x_start, x_end)
+    return mask, x_start, x_end, raw_profile, smoothed_profile
+
+
 def generate_valid_region_mask(image: np.ndarray, config: Dict) -> Tuple[np.ndarray, int, int]:
     illumination = estimate_illumination(image, int(config.get("blur_kernel_size", 151)))
     raw_profile, smoothed_profile = horizontal_profile(illumination, int(config.get("profile_smooth_window", 31)))
@@ -208,15 +384,58 @@ def run_valid_region(
     output_dir: str | Path,
     config: Dict,
 ) -> Dict:
-    illumination = estimate_illumination(image, int(config.get("blur_kernel_size", 151)))
-    raw_profile, smoothed_profile = horizontal_profile(illumination, int(config.get("profile_smooth_window", 31)))
-    x_start, x_end = detect_valid_region(
-        smoothed_profile=smoothed_profile,
-        threshold_ratio=float(config.get("threshold_ratio", 0.45)),
-        safety_margin=int(config.get("safety_margin", 10)),
-        min_region_width_ratio=float(config.get("min_region_width_ratio", 0.35)),
-    )
-    mask = build_mask(image.shape, x_start, x_end)
+    method = str(config.get("method", "horizontal_illumination_profile")).strip().lower()
+    if method == "central_deep_layer":
+        mask = _central_deep_layer_mask(image, config)
+        x_start, x_end = _bbox_from_mask(mask)
+        illumination = estimate_illumination(image, int(config.get("blur_kernel_size", 151)))
+        depth_map = 255.0 - illumination.astype(np.float32)
+        _save_depth_debug_outputs(
+            original_image=image,
+            depth_map=depth_map,
+            mask=mask,
+            output_dir=output_dir,
+        )
+        return {
+            "enabled": True,
+            "x_start": int(x_start),
+            "x_end": int(x_end),
+            "width": int(max(1, x_end - x_start + 1)),
+            "method": "central_deep_layer",
+            "output_dir": str(Path(output_dir).resolve()),
+        }
+
+    if method == "hybrid_deep_layer_profile":
+        profile_mask, _, _, raw_profile, smoothed_profile = _horizontal_profile_mask(image, config)
+        # Hybrid strategy: first constrain by profile-based valid area, then refine by depth.
+        depth_mask = _central_deep_layer_mask(image, config, constraint_mask=profile_mask)
+        combine_mode = str(config.get("hybrid_combine_mode", "and"))
+        mask = _combine_masks(depth_mask, profile_mask, combine_mode)
+        if int(np.count_nonzero(mask)) == 0:
+            depth_nz = int(np.count_nonzero(depth_mask))
+            profile_nz = int(np.count_nonzero(profile_mask))
+            # Fail-safe: avoid empty valid-region masks by falling back to the richer source mask.
+            mask = depth_mask if depth_nz >= profile_nz else profile_mask
+        x_start, x_end = _bbox_from_mask(mask)
+        illumination = estimate_illumination(image, int(config.get("blur_kernel_size", 151)))
+        depth_map = 255.0 - illumination.astype(np.float32)
+        _save_depth_debug_outputs(
+            original_image=image,
+            depth_map=depth_map,
+            mask=mask,
+            output_dir=output_dir,
+        )
+        return {
+            "enabled": True,
+            "x_start": int(x_start),
+            "x_end": int(x_end),
+            "width": int(max(1, x_end - x_start + 1)),
+            "method": "hybrid_deep_layer_profile",
+            "hybrid_combine_mode": combine_mode.lower(),
+            "output_dir": str(Path(output_dir).resolve()),
+        }
+
+    mask, x_start, x_end, raw_profile, smoothed_profile = _horizontal_profile_mask(image, config)
     save_debug_outputs(image, mask, x_start, x_end, raw_profile, smoothed_profile, output_dir)
     return {
         "enabled": True,

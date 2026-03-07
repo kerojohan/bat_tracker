@@ -31,6 +31,8 @@ tracking:
   min_track_displacement: 12.0
   min_track_path_length: 18.0
   min_track_straightness: 0.0
+  require_start_or_end_in_valid_region: false
+  valid_region_gate_dilate_px: 0
   auto_merge_suggested: false
   merge_max_gap_frames: 8
   merge_max_endpoint_distance: 80.0
@@ -40,12 +42,20 @@ tracking:
 
 valid_region:
   enabled: true
+  method: horizontal_illumination_profile
+  apply_to_detection: true
+  hybrid_combine_mode: and
   input_image: ""
   blur_kernel_size: 151
   profile_smooth_window: 31
   threshold_ratio: 0.45
   safety_margin: 10
   min_region_width_ratio: 0.35
+  depth_percentile: 85.0
+  depth_morph_kernel: 9
+  depth_min_area_ratio: 0.02
+  depth_layer_percentiles: []
+  depth_layer_dilate_px: []
   output_subdir: valid_region
 
 output:

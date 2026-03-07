@@ -115,7 +115,20 @@ def _path_length(track_points: List[TrackPoint]) -> float:
     return sum(hypot(p1.x - p0.x, p1.y - p0.y) for p0, p1 in zip(track_points[:-1], track_points[1:]))
 
 
-def _filter_track_points(points: List[TrackPoint], tracking_cfg: Dict, fps: float) -> List[TrackPoint]:
+def _point_in_mask(point: TrackPoint, mask: np.ndarray) -> bool:
+    xi = int(round(point.x))
+    yi = int(round(point.y))
+    if yi < 0 or yi >= mask.shape[0] or xi < 0 or xi >= mask.shape[1]:
+        return False
+    return bool(mask[yi, xi] > 0)
+
+
+def _filter_track_points(
+    points: List[TrackPoint],
+    tracking_cfg: Dict,
+    fps: float,
+    valid_mask: np.ndarray | None = None,
+) -> List[TrackPoint]:
     min_track_length_cfg = int(tracking_cfg.get("min_track_length", 1))
     min_track_duration_sec = float(tracking_cfg.get("min_track_duration_sec", 0.0))
     min_track_length_from_sec = int(ceil(max(0.0, min_track_duration_sec) * max(1e-6, fps)))
@@ -123,6 +136,14 @@ def _filter_track_points(points: List[TrackPoint], tracking_cfg: Dict, fps: floa
     min_track_displacement = float(tracking_cfg.get("min_track_displacement", 0.0))
     min_track_path_length = float(tracking_cfg.get("min_track_path_length", 0.0))
     min_track_straightness = float(tracking_cfg.get("min_track_straightness", 0.0))
+    require_start_or_end_in_valid_region = bool(tracking_cfg.get("require_start_or_end_in_valid_region", False))
+    valid_region_gate_dilate_px = max(0, int(tracking_cfg.get("valid_region_gate_dilate_px", 0)))
+
+    gate_mask = valid_mask
+    if gate_mask is not None and valid_region_gate_dilate_px > 0:
+        k = 2 * valid_region_gate_dilate_px + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        gate_mask = cv2.dilate(gate_mask, kernel, iterations=1)
 
     by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
     for point in points:
@@ -147,6 +168,10 @@ def _filter_track_points(points: List[TrackPoint], tracking_cfg: Dict, fps: floa
         if min_track_straightness > 0.0 and path_length > 0.0:
             straightness = displacement / path_length
             if straightness < min_track_straightness:
+                continue
+
+        if require_start_or_end_in_valid_region and gate_mask is not None:
+            if not (_point_in_mask(start, gate_mask) or _point_in_mask(end, gate_mask)):
                 continue
 
         filtered.extend(track_points)
@@ -405,6 +430,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     background_path = out_dir / "background.png"
     cv2.imwrite(str(background_path), background)
     valid_mask: np.ndarray | None = None
+    valid_mask_for_detection: np.ndarray | None = None
     valid_region_meta: Dict = {"enabled": False}
     valid_region_outputs: Dict[str, str] = {}
 
@@ -428,6 +454,8 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         valid_mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
         if valid_mask is None:
             raise RuntimeError(f"Could not load valid-region mask from: {mask_path}")
+        if bool(valid_region_cfg.get("apply_to_detection", True)):
+            valid_mask_for_detection = valid_mask
         valid_region_outputs = {
             "valid_region_mask_png": str(mask_path.resolve()),
             "valid_region_overlay_png": str((valid_output_dir / "overlay.png").resolve()),
@@ -447,7 +475,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     suppressed_burst_frames = 0
 
     for frame_idx, gray in iter_gray_frames(input_video):
-        dets = detect_foreground_blobs(gray, background, cfg["detection"], valid_mask=valid_mask)
+        dets = detect_foreground_blobs(gray, background, cfg["detection"], valid_mask=valid_mask_for_detection)
         if burst_gate is not None and not burst_gate.should_keep(frame_idx, len(dets)):
             dets = []
             suppressed_burst_frames += 1
@@ -455,7 +483,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         all_points.extend(frame_points)
         frame_processed += 1
 
-    filtered_points = _filter_track_points(all_points, cfg["tracking"], meta.fps)
+    filtered_points = _filter_track_points(all_points, cfg["tracking"], meta.fps, valid_mask=valid_mask)
     filtered_points, merges_applied = _auto_merge_track_points(filtered_points, cfg["tracking"])
 
     tracks_csv_path = out_dir / "tracks.csv"
