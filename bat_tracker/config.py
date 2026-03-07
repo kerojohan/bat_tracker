@@ -39,6 +39,12 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "min_track_displacement": 12.0,
         "min_track_path_length": 18.0,
         "min_track_straightness": 0.0,
+        "auto_merge_suggested": False,
+        "merge_max_gap_frames": 8,
+        "merge_max_endpoint_distance": 80.0,
+        "merge_overlap_min_common_frames": 3,
+        "merge_overlap_max_mean_distance": 60.0,
+        "merge_overlap_min_direction_cosine": 0.8,
     },
     "valid_region": {
         "enabled": True,
@@ -54,6 +60,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "overlay_line_thickness": 2,
         "overlay_start_radius": 5,
         "overlay_alpha": 1.0,
+        "overlay_draw_track_labels": False,
+        "overlay_draw_track_labels_at_end": False,
+        "overlay_label_font_scale": 0.5,
+        "overlay_label_thickness": 1,
+        "export_track_clips": False,
+        "track_clips_subdir": "track_clips",
+        "track_clips_padding_frames": 0,
     },
 }
 

@@ -71,6 +71,7 @@ Se escriben en la carpeta indicada por `--output`:
 - `valid_region/profile.png`: perfil horizontal (raw + suavizado + cortes).
 - `tracks.csv`: trayectorias 2D por deteccion y frame.
 - `tracks_overlay.png`: trayectorias dibujadas sobre `background.png`.
+- `track_clips/` (opcional): clips de video por track (`track_0001_000120-000186.mp4`, etc.).
 - `meta.json`: metadatos del video, parametros efectivos y metricas de ejecucion.
   - incluye bloque `valid_region` con `x_start`, `x_end`, `width` y `method`.
 
@@ -91,6 +92,7 @@ Columnas exactas:
 7. Export de `tracks.csv` y render final `tracks_overlay.png` (color por track, primer punto mas grande).
 8. Si `valid_region.enabled`, calculo de banda vertical valida desde iluminacion horizontal y guardado en `valid_region/*`.
 9. Export de `meta.json` con parametros, metadatos y metricas.
+   - incluye `postprocess.auto_merges_applied` cuando `tracking.auto_merge_suggested` esta activo.
 
 ## Configuracion
 
@@ -115,6 +117,11 @@ Usa `config.yaml.example` como base.
   - `tracking.min_track_displacement`: desplazamiento neto minimo (pixeles)
   - `tracking.min_track_path_length`: recorrido acumulado minimo (pixeles)
   - `tracking.min_track_straightness`: rectitud minima `desplazamiento/recorrido` (0..1)
+  - `tracking.auto_merge_suggested`: fusion automatica postproceso de tracks potencialmente duplicados
+  - `tracking.merge_max_gap_frames` y `tracking.merge_max_endpoint_distance`: merge por handoff cercano (fin->inicio)
+  - `tracking.merge_overlap_min_common_frames`: minimo de frames comunes para evaluar merge por solape
+  - `tracking.merge_overlap_max_mean_distance`: distancia media maxima en frames comunes
+  - `tracking.merge_overlap_min_direction_cosine`: coherencia minima de direccion entre tracks solapados
 - `valid_region.*`: mascara vertical valida para eliminar vignette lateral IR sin recortar interior oscuro de cueva
   - `valid_region.enabled`: activa/desactiva etapa
   - `valid_region.input_image`: si se define, usa esta imagen en vez de `background.png`
@@ -123,6 +130,12 @@ Usa `config.yaml.example` como base.
   - `valid_region.safety_margin`: recorte adicional en pixeles por lado
   - `valid_region.min_region_width_ratio`: evita regiones absurdamente estrechas
 - `output.*`: estilo del overlay
+  - `output.overlay_draw_track_labels`: dibuja el numero de `track_id` junto al inicio de cada track
+  - `output.overlay_draw_track_labels_at_end`: dibuja el numero de `track_id` al final del track
+  - `output.overlay_label_font_scale` y `output.overlay_label_thickness`: estilo de etiqueta
+  - `output.export_track_clips`: exporta clips por track en una carpeta
+  - `output.track_clips_subdir`: nombre de la carpeta de clips dentro del output
+  - `output.track_clips_padding_frames`: frames extra antes/despues del rango del track
 
 ## Ajuste rapido para mejorar recall/continuidad
 

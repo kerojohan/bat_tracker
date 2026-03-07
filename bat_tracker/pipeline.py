@@ -150,6 +150,240 @@ def _filter_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> List[T
     return filtered
 
 
+def _vector_cosine(v0: tuple[float, float], v1: tuple[float, float]) -> float | None:
+    n0 = hypot(v0[0], v0[1])
+    n1 = hypot(v1[0], v1[1])
+    if n0 <= 1e-6 or n1 <= 1e-6:
+        return None
+    return (v0[0] * v1[0] + v0[1] * v1[1]) / (n0 * n1)
+
+
+def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tuple[List[TrackPoint], List[Dict]]:
+    if not bool(tracking_cfg.get("auto_merge_suggested", False)):
+        return points, []
+
+    by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
+    for point in points:
+        by_track[point.track_id].append(point)
+    for track_id in by_track:
+        by_track[track_id] = sorted(by_track[track_id], key=lambda p: p.frame)
+
+    if len(by_track) < 2:
+        return points, []
+
+    max_gap = int(tracking_cfg.get("merge_max_gap_frames", 8))
+    max_endpoint_dist = float(tracking_cfg.get("merge_max_endpoint_distance", 80.0))
+    min_overlap_common = int(tracking_cfg.get("merge_overlap_min_common_frames", 3))
+    max_overlap_mean_dist = float(tracking_cfg.get("merge_overlap_max_mean_distance", 60.0))
+    min_overlap_cos = float(tracking_cfg.get("merge_overlap_min_direction_cosine", 0.8))
+
+    parent: Dict[int, int] = {track_id: track_id for track_id in by_track}
+
+    def find(track_id: int) -> int:
+        while parent[track_id] != track_id:
+            parent[track_id] = parent[parent[track_id]]
+            track_id = parent[track_id]
+        return track_id
+
+    def union(a: int, b: int) -> None:
+        ra = find(a)
+        rb = find(b)
+        if ra == rb:
+            return
+        if ra < rb:
+            parent[rb] = ra
+        else:
+            parent[ra] = rb
+
+    merges_applied: List[Dict] = []
+    track_ids = sorted(by_track.keys())
+    for idx, track_a_id in enumerate(track_ids):
+        a_pts = by_track[track_a_id]
+        a_start = a_pts[0]
+        a_end = a_pts[-1]
+        a_start_vec = (a_pts[min(2, len(a_pts) - 1)].x - a_pts[0].x, a_pts[min(2, len(a_pts) - 1)].y - a_pts[0].y)
+        a_end_vec = (a_pts[-1].x - a_pts[max(0, len(a_pts) - 3)].x, a_pts[-1].y - a_pts[max(0, len(a_pts) - 3)].y)
+        a_frames = {p.frame: p for p in a_pts}
+
+        for track_b_id in track_ids[idx + 1 :]:
+            b_pts = by_track[track_b_id]
+            b_start = b_pts[0]
+            b_end = b_pts[-1]
+            b_start_vec = (b_pts[min(2, len(b_pts) - 1)].x - b_pts[0].x, b_pts[min(2, len(b_pts) - 1)].y - b_pts[0].y)
+            b_end_vec = (b_pts[-1].x - b_pts[max(0, len(b_pts) - 3)].x, b_pts[-1].y - b_pts[max(0, len(b_pts) - 3)].y)
+
+            reason = None
+            reason_data: Dict[str, float | int] = {}
+
+            if a_end.frame < b_start.frame:
+                gap = b_start.frame - a_end.frame
+                dist = hypot(b_start.x - a_end.x, b_start.y - a_end.y)
+                if gap <= max_gap and dist <= max_endpoint_dist:
+                    reason = "handoff"
+                    reason_data = {"gap_frames": gap, "endpoint_distance": dist}
+            elif b_end.frame < a_start.frame:
+                gap = a_start.frame - b_end.frame
+                dist = hypot(a_start.x - b_end.x, a_start.y - b_end.y)
+                if gap <= max_gap and dist <= max_endpoint_dist:
+                    reason = "handoff"
+                    reason_data = {"gap_frames": gap, "endpoint_distance": dist}
+            else:
+                b_frames = {p.frame: p for p in b_pts}
+                common_frames = sorted(set(a_frames.keys()).intersection(b_frames.keys()))
+                if len(common_frames) >= min_overlap_common:
+                    distances = []
+                    cosines = []
+                    for frame in common_frames:
+                        pa = a_frames[frame]
+                        pb = b_frames[frame]
+                        distances.append(hypot(pa.x - pb.x, pa.y - pb.y))
+
+                    mean_distance = sum(distances) / len(distances)
+                    c0 = _vector_cosine(a_start_vec, b_start_vec)
+                    c1 = _vector_cosine(a_end_vec, b_end_vec)
+                    if c0 is not None:
+                        cosines.append(c0)
+                    if c1 is not None:
+                        cosines.append(c1)
+                    mean_cos = (sum(cosines) / len(cosines)) if cosines else None
+                    if mean_distance <= max_overlap_mean_dist and (mean_cos is None or mean_cos >= min_overlap_cos):
+                        reason = "overlap"
+                        reason_data = {
+                            "common_frames": len(common_frames),
+                            "mean_distance": mean_distance,
+                            "mean_direction_cosine": mean_cos if mean_cos is not None else 1.0,
+                        }
+
+            if reason is None:
+                continue
+
+            ra = find(track_a_id)
+            rb = find(track_b_id)
+            if ra == rb:
+                continue
+            union(track_a_id, track_b_id)
+            merged_to = min(find(track_a_id), find(track_b_id))
+            merges_applied.append(
+                {
+                    "track_a": track_a_id,
+                    "track_b": track_b_id,
+                    "merged_to": merged_to,
+                    "reason": reason,
+                    **reason_data,
+                }
+            )
+
+    remap: Dict[int, int] = {track_id: find(track_id) for track_id in track_ids}
+    if all(src == dst for src, dst in remap.items()):
+        return points, []
+
+    merged_points: List[TrackPoint] = []
+    for point in points:
+        new_track_id = remap.get(point.track_id, point.track_id)
+        if new_track_id == point.track_id:
+            merged_points.append(point)
+        else:
+            merged_points.append(
+                TrackPoint(
+                    video_id=point.video_id,
+                    track_id=new_track_id,
+                    frame=point.frame,
+                    time_sec=point.time_sec,
+                    x=point.x,
+                    y=point.y,
+                    vx=point.vx,
+                    vy=point.vy,
+                    bbox_x1=point.bbox_x1,
+                    bbox_y1=point.bbox_y1,
+                    bbox_x2=point.bbox_x2,
+                    bbox_y2=point.bbox_y2,
+                    area=point.area,
+                )
+            )
+
+    merged_points = sorted(merged_points, key=lambda p: (p.track_id, p.frame))
+    deduped: List[TrackPoint] = []
+    seen = set()
+    for point in merged_points:
+        key = (point.track_id, point.frame, round(point.x, 3), round(point.y, 3))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(point)
+
+    return deduped, merges_applied
+
+
+def _export_track_clips(
+    input_video: str,
+    output_dir: Path,
+    points: List[TrackPoint],
+    fps: float,
+    frame_size: tuple[int, int],
+    clips_subdir: str,
+    pad_frames: int,
+) -> Dict[str, str]:
+    by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
+    for point in points:
+        by_track[point.track_id].append(point)
+
+    if not by_track:
+        return {}
+
+    clips_dir = output_dir / clips_subdir
+    clips_dir.mkdir(parents=True, exist_ok=True)
+
+    intervals: Dict[int, tuple[int, int]] = {}
+    for track_id, track_points in by_track.items():
+        frames = sorted(p.frame for p in track_points)
+        start = max(0, frames[0] - pad_frames)
+        end = max(start, frames[-1] + pad_frames)
+        intervals[track_id] = (start, end)
+
+    cap = cv2.VideoCapture(str(input_video))
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video for track clips export: {input_video}")
+
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    width, height = frame_size
+    writers: Dict[int, cv2.VideoWriter] = {}
+    clip_paths: Dict[str, str] = {}
+    current_frame = 0
+
+    try:
+        while True:
+            ok, frame = cap.read()
+            if not ok:
+                break
+
+            for track_id, (start, end) in intervals.items():
+                if current_frame < start or current_frame > end:
+                    continue
+
+                writer = writers.get(track_id)
+                if writer is None:
+                    clip_path = clips_dir / f"track_{track_id:04d}_{start:06d}-{end:06d}.mp4"
+                    writer = cv2.VideoWriter(str(clip_path), fourcc, fps, (width, height))
+                    if not writer.isOpened():
+                        raise RuntimeError(f"Cannot create clip writer for track {track_id}: {clip_path}")
+                    writers[track_id] = writer
+                    clip_paths[str(track_id)] = str(clip_path.resolve())
+
+                if frame.ndim == 2:
+                    out_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                else:
+                    out_frame = frame
+                writer.write(out_frame)
+
+            current_frame += 1
+    finally:
+        cap.release()
+        for writer in writers.values():
+            writer.release()
+
+    return clip_paths
+
+
 def run_pipeline(input_video: str, output_dir: str, config_path: str | None = None) -> Dict:
     cfg = load_config(config_path)
 
@@ -218,6 +452,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         frame_processed += 1
 
     filtered_points = _filter_track_points(all_points, cfg["tracking"])
+    filtered_points, merges_applied = _auto_merge_track_points(filtered_points, cfg["tracking"])
 
     tracks_csv_path = out_dir / "tracks.csv"
     _write_tracks_csv(tracks_csv_path, filtered_points)
@@ -228,9 +463,25 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         line_thickness=int(cfg["output"]["overlay_line_thickness"]),
         start_radius=int(cfg["output"]["overlay_start_radius"]),
         alpha=float(cfg["output"].get("overlay_alpha", 1.0)),
+        draw_track_labels=bool(cfg["output"].get("overlay_draw_track_labels", False)),
+        draw_track_labels_at_end=bool(cfg["output"].get("overlay_draw_track_labels_at_end", False)),
+        label_font_scale=float(cfg["output"].get("overlay_label_font_scale", 0.5)),
+        label_thickness=int(cfg["output"].get("overlay_label_thickness", 1)),
     )
     overlay_path = out_dir / "tracks_overlay.png"
     cv2.imwrite(str(overlay_path), overlay)
+
+    track_clip_outputs: Dict[str, str] = {}
+    if bool(cfg["output"].get("export_track_clips", False)):
+        track_clip_outputs = _export_track_clips(
+            input_video=input_video,
+            output_dir=out_dir,
+            points=filtered_points,
+            fps=meta.fps,
+            frame_size=(meta.width, meta.height),
+            clips_subdir=str(cfg["output"].get("track_clips_subdir", "track_clips")),
+            pad_frames=max(0, int(cfg["output"].get("track_clips_padding_frames", 0))),
+        )
 
     meta_payload = {
         "video": {
@@ -246,12 +497,18 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         "metrics": {
             **_build_metrics(filtered_points, frame_processed),
             "frames_suppressed_temporal_burst": suppressed_burst_frames,
+            "tracks_merged_auto": len(merges_applied),
         },
         "outputs": {
             "background_png": str(background_path.resolve()),
             "tracks_csv": str(tracks_csv_path.resolve()),
             "tracks_overlay_png": str(overlay_path.resolve()),
+            "track_clips": track_clip_outputs,
             **valid_region_outputs,
+        },
+        "postprocess": {
+            "auto_merge_enabled": bool(cfg["tracking"].get("auto_merge_suggested", False)),
+            "auto_merges_applied": merges_applied,
         },
     }
 
