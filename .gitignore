@@ -26,3 +26,4 @@ out_*/
 # Keep project docs/configs tracked even with png ignored
 !README.md
 !config*.yaml
+!src_assets/*.png
