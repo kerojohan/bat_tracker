@@ -171,3 +171,17 @@ pytest
 ```
 
 Los tests cubren deteccion, tracking y export/render de salida.
+
+## Agradecimientos / Referencias
+
+Parte de los parámetros y perfiles de uso incluidos en este proyecto (como `config.thrutracker_like.yaml`) se han inspirado en el enfoque y resultados de la herramienta **[ThruTracker](https://github.com/AaronJCorcoran/ThruTracker)** desarrollada por Aaron J. Corcoran. Recomendaos consultar su repositorio en GitHub.
+
+## Licencia
+
+Este proyecto está bajo la licencia **Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)**. 
+
+Esto significa que eres libre de compartir, copiar, distribuir, ejecutar y comunicar públicamente la obra, así como hacer obras derivadas, bajo las siguientes condiciones:
+- **Atribución (Attribution)**: Debes reconocer adecuadamente la autoría, proporcionar un enlace a la licencia e indicar si se han realizado cambios.
+- **No Comercial (NonCommercial)**: No puedes utilizar el material para una finalidad comercial.
+
+Para ver una copia de esta licencia, visita [https://creativecommons.org/licenses/by-nc/4.0/](https://creativecommons.org/licenses/by-nc/4.0/) o revisa el archivo `LICENSE` incluido en este repositorio.
