@@ -49,6 +49,18 @@ python -m bat_tracker.valid_region \
   --safety-margin 10
 ```
 
+## Ejemplo de Resultados
+
+Aquí se muestran visualizaciones de las salidas generadas:
+
+**1. Máscara de Zona Válida:**
+*Filtra los laterales oscuros basándose en el perfil de iluminación horizontal, reteniendo la zona útil.*
+![Valid Region](src_assets/valid_region_overlay.png)
+
+**2. Tracking Final:**
+*Trayectorias 2D superpuestas sobre el fondo calculado.*
+![Tracks Overlay](src_assets/tracks_overlay.png)
+
 ## Entradas
 
 - `--input` (obligatorio): ruta a video IR monocromo, por ejemplo `.mp4`.
