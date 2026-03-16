@@ -53,8 +53,8 @@ python -m bat_tracker.valid_region \
 
 Aquí se muestran visualizaciones de las salidas generadas:
 
-**1. Máscara de Zona Válida:**
-*Filtra los laterales oscuros basándose en el perfil de iluminación horizontal, reteniendo la zona útil.*
+**1. Máscara de Zona Válida (Método Híbrido):**
+*Filtra los laterales oscuros combinando profundidad en el centro y perfil de iluminación, reteniendo la zona útil.*
 ![Valid Region](src_assets/valid_region_overlay.png)
 
 **2. Tracking Final:**
