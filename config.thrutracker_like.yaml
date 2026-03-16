@@ -22,6 +22,12 @@ tracking:
   min_track_displacement: 22.0
   min_track_path_length: 30.0
   min_track_straightness: 0.1
+  auto_merge_suggested: true
+  merge_max_gap_frames: 8
+  merge_max_endpoint_distance: 80.0
+  merge_overlap_min_common_frames: 3
+  merge_overlap_max_mean_distance: 60.0
+  merge_overlap_min_direction_cosine: 0.8
 
 valid_region:
   enabled: true
@@ -37,3 +43,9 @@ output:
   overlay_line_thickness: 2
   overlay_start_radius: 5
   overlay_alpha: 1.0
+  overlay_draw_track_labels: true
+  export_track_clips: true
+  track_clips_subdir: track_clips
+  track_clips_padding_frames: 5
+  overlay_draw_track_labels: true
+  overlay_draw_track_labels_at_end: true
