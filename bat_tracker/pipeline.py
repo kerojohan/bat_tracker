@@ -39,6 +39,100 @@ CSV_COLUMNS = [
     "area",
 ]
 
+EVENTS_CSV_COLUMNS = [
+    "video_id",
+    "track_id",
+    "time_start_sec",
+    "time_end_sec",
+    "duration_sec",
+    "frame_start",
+    "frame_end",
+    "num_detections",
+    "x_start",
+    "y_start",
+    "x_end",
+    "y_end",
+    "displacement_px",
+    "path_length_px",
+    "straightness",
+    "mean_speed_px_sec",
+    "mean_area",
+    "start_in_valid_region",
+    "end_in_valid_region",
+    "direction",
+]
+
+
+def _classify_direction(start_inside: bool, end_inside: bool) -> str:
+    if start_inside and end_inside:
+        return "inside"
+    if start_inside and not end_inside:
+        return "exits"
+    if not start_inside and end_inside:
+        return "enters"
+    return "outside"
+
+
+def _write_events_csv(
+    path: Path,
+    points: List[TrackPoint],
+    valid_mask: np.ndarray | None,
+) -> None:
+    by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
+    for p in points:
+        by_track[p.track_id].append(p)
+
+    rows: list[dict] = []
+    for track_id in sorted(by_track):
+        tps = sorted(by_track[track_id], key=lambda p: p.frame)
+        start = tps[0]
+        end = tps[-1]
+
+        displacement = hypot(end.x - start.x, end.y - start.y)
+        pl = _path_length(tps)
+        duration = end.time_sec - start.time_sec
+        straightness = (displacement / pl) if pl > 0 else 0.0
+        mean_speed = (pl / duration) if duration > 0 else 0.0
+        avg_area = sum(p.area for p in tps) / len(tps)
+
+        if valid_mask is not None:
+            s_in = _point_in_mask(start, valid_mask)
+            e_in = _point_in_mask(end, valid_mask)
+            direction = _classify_direction(s_in, e_in)
+        else:
+            s_in = None
+            e_in = None
+            direction = "unknown"
+
+        rows.append({
+            "video_id": start.video_id,
+            "track_id": track_id,
+            "time_start_sec": round(start.time_sec, 4),
+            "time_end_sec": round(end.time_sec, 4),
+            "duration_sec": round(duration, 4),
+            "frame_start": start.frame,
+            "frame_end": end.frame,
+            "num_detections": len(tps),
+            "x_start": round(start.x, 2),
+            "y_start": round(start.y, 2),
+            "x_end": round(end.x, 2),
+            "y_end": round(end.y, 2),
+            "displacement_px": round(displacement, 2),
+            "path_length_px": round(pl, 2),
+            "straightness": round(straightness, 4),
+            "mean_speed_px_sec": round(mean_speed, 2),
+            "mean_area": round(avg_area, 2),
+            "start_in_valid_region": s_in if s_in is not None else "",
+            "end_in_valid_region": e_in if e_in is not None else "",
+            "direction": direction,
+        })
+
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=EVENTS_CSV_COLUMNS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
 
 def _write_tracks_csv(path: Path, points: List[TrackPoint]) -> None:
     with path.open("w", newline="", encoding="utf-8") as handle:
@@ -489,6 +583,9 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     tracks_csv_path = out_dir / "tracks.csv"
     _write_tracks_csv(tracks_csv_path, filtered_points)
 
+    events_csv_path = out_dir / "events.csv"
+    _write_events_csv(events_csv_path, filtered_points, valid_mask)
+
     overlay = render_tracks_overlay(
         background_gray=background,
         points=filtered_points,
@@ -534,6 +631,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         "outputs": {
             "background_png": str(background_path.resolve()),
             "tracks_csv": str(tracks_csv_path.resolve()),
+            "events_csv": str(events_csv_path.resolve()),
             "tracks_overlay_png": str(overlay_path.resolve()),
             "track_clips": track_clip_outputs,
             **valid_region_outputs,
