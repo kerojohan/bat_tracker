@@ -342,6 +342,202 @@ def _expand_mask_by_depth_layers(
     return out_mask
 
 
+def _moving_average_1d(values: np.ndarray, window: int) -> np.ndarray:
+    if values.size == 0:
+        return values
+    w = max(1, int(window))
+    if w % 2 == 0:
+        w += 1
+    if w <= 1:
+        return values.astype(np.float32)
+    pad = w // 2
+    padded = np.pad(values.astype(np.float32), (pad, pad), mode="edge")
+    kernel = np.ones(w, dtype=np.float32) / float(w)
+    return np.convolve(padded, kernel, mode="valid")
+
+
+def _regularized_bottom_path(
+    abs_grad_y: np.ndarray,
+    xs: list[int],
+    tops: list[int],
+    bottoms: list[int],
+    search_up: int,
+    search_down: int,
+    config: Dict,
+) -> np.ndarray:
+    n = len(xs)
+    if n == 0:
+        return np.zeros((0,), dtype=np.int32)
+
+    offsets = np.arange(-search_up, search_down + 1, dtype=np.int32)
+    m = int(offsets.size)
+    if m <= 1:
+        return np.asarray(bottoms, dtype=np.int32)
+
+    h = abs_grad_y.shape[0]
+    scores = np.full((n, m), -1e9, dtype=np.float32)
+    valid = np.zeros((n, m), dtype=bool)
+
+    for i, x in enumerate(xs):
+        top = int(tops[i])
+        bottom = int(bottoms[i])
+        y_raw = bottom + offsets
+        ok = np.logical_and(y_raw >= (top + 1), y_raw <= (h - 1))
+        if not np.any(ok):
+            continue
+        yy = y_raw[ok]
+        vals = abs_grad_y[yy, x].astype(np.float32)
+        scores[i, ok] = vals
+        valid[i, ok] = True
+
+    if not np.any(valid):
+        return np.asarray(bottoms, dtype=np.int32)
+
+    grad_vals = scores[valid]
+    grad_scale = float(np.percentile(grad_vals, 90)) if grad_vals.size else 1.0
+    grad_scale = max(1e-6, grad_scale)
+    scores = scores / grad_scale
+
+    # Soft preference for slightly lower boundaries when gradient evidence is similar.
+    down_bias = float(config.get("bottom_contour_downward_bias", 0.10))
+    scores = scores + down_bias * (offsets[np.newaxis, :] / float(max(1, search_down)))
+
+    smooth_penalty = float(config.get("bottom_contour_regularization", 0.90))
+    max_step = max(1, int(config.get("bottom_contour_max_step_px", 10)))
+
+    dp = np.full((n, m), -1e9, dtype=np.float32)
+    back = np.full((n, m), -1, dtype=np.int32)
+
+    dp[0, valid[0]] = scores[0, valid[0]]
+    for i in range(1, n):
+        valid_j = np.where(valid[i])[0]
+        if valid_j.size == 0:
+            continue
+        prev_valid = np.where(valid[i - 1])[0]
+        if prev_valid.size == 0:
+            dp[i, valid_j] = scores[i, valid_j]
+            continue
+
+        for j in valid_j:
+            k0 = max(int(prev_valid.min()), j - max_step)
+            k1 = min(int(prev_valid.max()), j + max_step)
+            k_idx = prev_valid[(prev_valid >= k0) & (prev_valid <= k1)]
+            if k_idx.size == 0:
+                continue
+            trans_pen = smooth_penalty * np.abs(offsets[k_idx] - offsets[j]).astype(np.float32)
+            cand = dp[i - 1, k_idx] - trans_pen
+            best_local = int(np.argmax(cand))
+            best_k = int(k_idx[best_local])
+            dp[i, j] = scores[i, j] + float(cand[best_local])
+            back[i, j] = best_k
+
+    last_valid = np.where(valid[-1])[0]
+    if last_valid.size == 0:
+        return np.asarray(bottoms, dtype=np.int32)
+    tie_break = 1e-3 * offsets[last_valid].astype(np.float32)
+    j_best = int(last_valid[int(np.argmax(dp[-1, last_valid] + tie_break))])
+
+    path_idx = np.full((n,), j_best, dtype=np.int32)
+    for i in range(n - 1, 0, -1):
+        prev = int(back[i, path_idx[i]])
+        if prev >= 0:
+            path_idx[i - 1] = prev
+        else:
+            # If transition is missing, keep nearest feasible state.
+            candidates = np.where(valid[i - 1])[0]
+            if candidates.size:
+                nearest = int(np.argmin(np.abs(candidates - path_idx[i])))
+                path_idx[i - 1] = int(candidates[nearest])
+            else:
+                path_idx[i - 1] = path_idx[i]
+
+    ys = np.asarray(bottoms, dtype=np.int32) + offsets[path_idx]
+    ys = np.clip(ys, np.asarray(tops, dtype=np.int32) + 1, h - 1)
+    return ys.astype(np.int32)
+
+
+def _snap_lower_contour_to_depth_gradient(
+    mask: np.ndarray,
+    depth_map: np.ndarray,
+    config: Dict,
+) -> np.ndarray:
+    if not bool(config.get("bottom_contour_snap_enabled", False)):
+        return mask
+
+    h, w = mask.shape[:2]
+    search_up = max(0, int(config.get("bottom_contour_search_up_px", 18)))
+    search_down = max(0, int(config.get("bottom_contour_search_down_px", 48)))
+    smooth_window = int(config.get("bottom_contour_smooth_window", 31))
+    gradient_quantile = float(config.get("bottom_contour_gradient_quantile", 55.0))
+    gradient_quantile = float(max(0.0, min(100.0, gradient_quantile)))
+
+    grad_y = cv2.Sobel(depth_map.astype(np.float32), cv2.CV_32F, 0, 1, ksize=3)
+    abs_grad_y = np.abs(grad_y)
+    global_thr = float(np.percentile(abs_grad_y, gradient_quantile))
+
+    xs: list[int] = []
+    tops: list[int] = []
+    bottoms: list[int] = []
+    snapped: list[int] = []
+    for x in range(w):
+        ys = np.where(mask[:, x] > 0)[0]
+        if ys.size == 0:
+            continue
+        top = int(ys.min())
+        bottom = int(ys.max())
+        y0 = max(top, bottom - search_up)
+        y1 = min(h - 1, bottom + search_down)
+        if y1 <= y0:
+            continue
+        col = abs_grad_y[y0 : y1 + 1, x]
+        local_idx = int(np.argmax(col))
+        local_best = float(col[local_idx])
+        strong_ratio = float(config.get("bottom_contour_deepest_strong_ratio", 0.70))
+        strong_ratio = float(max(0.0, min(1.0, strong_ratio)))
+        strong_thr = max(global_thr, local_best * strong_ratio)
+        strong_idx = np.where(col >= strong_thr)[0]
+        if strong_idx.size > 0:
+            # Prefer the deepest strong edge to avoid selecting intermediate ridges.
+            best_y = int(y0 + strong_idx[-1])
+        else:
+            best_y = int(y0 + local_idx)
+        if local_best < global_thr:
+            best_y = bottom
+        if best_y <= top:
+            best_y = min(h - 1, top + 1)
+        xs.append(x)
+        tops.append(top)
+        bottoms.append(bottom)
+        snapped.append(best_y)
+
+    if not xs:
+        return mask
+
+    # Global regularization across x: reduce notches by solving a smooth path.
+    regularized = _regularized_bottom_path(
+        abs_grad_y=abs_grad_y,
+        xs=xs,
+        tops=tops,
+        bottoms=bottoms,
+        search_up=search_up,
+        search_down=search_down,
+        config=config,
+    )
+    base = np.asarray(snapped, dtype=np.float32)
+    mix = float(max(0.0, min(1.0, config.get("bottom_contour_regularization_mix", 0.75))))
+    mixed = (1.0 - mix) * base + mix * regularized.astype(np.float32)
+    smoothed = _moving_average_1d(mixed, smooth_window)
+    smoothed = np.rint(smoothed).astype(np.int32)
+
+    refined = np.zeros_like(mask, dtype=np.uint8)
+    for i, x in enumerate(xs):
+        top = tops[i]
+        new_bottom = int(np.clip(smoothed[i], top + 1, h - 1))
+        refined[top : new_bottom + 1, x] = 255
+
+    return refined
+
+
 def _combine_masks(mask_a: np.ndarray, mask_b: np.ndarray, mode: str) -> np.ndarray:
     mode = mode.strip().lower()
     if mode == "or":
@@ -387,9 +583,10 @@ def run_valid_region(
     method = str(config.get("method", "horizontal_illumination_profile")).strip().lower()
     if method == "central_deep_layer":
         mask = _central_deep_layer_mask(image, config)
-        x_start, x_end = _bbox_from_mask(mask)
         illumination = estimate_illumination(image, int(config.get("blur_kernel_size", 151)))
         depth_map = 255.0 - illumination.astype(np.float32)
+        mask = _snap_lower_contour_to_depth_gradient(mask, depth_map, config)
+        x_start, x_end = _bbox_from_mask(mask)
         _save_depth_debug_outputs(
             original_image=image,
             depth_map=depth_map,
@@ -416,9 +613,10 @@ def run_valid_region(
             profile_nz = int(np.count_nonzero(profile_mask))
             # Fail-safe: avoid empty valid-region masks by falling back to the richer source mask.
             mask = depth_mask if depth_nz >= profile_nz else profile_mask
-        x_start, x_end = _bbox_from_mask(mask)
         illumination = estimate_illumination(image, int(config.get("blur_kernel_size", 151)))
         depth_map = 255.0 - illumination.astype(np.float32)
+        mask = _snap_lower_contour_to_depth_gradient(mask, depth_map, config)
+        x_start, x_end = _bbox_from_mask(mask)
         _save_depth_debug_outputs(
             original_image=image,
             depth_map=depth_map,

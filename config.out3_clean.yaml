@@ -50,7 +50,17 @@ valid_region:
   depth_morph_kernel: 9
   depth_min_area_ratio: 0.02
   depth_layer_percentiles: [82, 78, 72, 66]
-  depth_layer_dilate_px: [18, 14, 10, 6]
+  depth_layer_dilate_px: [0, 0, 0, 0]
+  bottom_contour_snap_enabled: true
+  bottom_contour_search_up_px: 20
+  bottom_contour_search_down_px: 110
+  bottom_contour_smooth_window: 35
+  bottom_contour_gradient_quantile: 52.0
+  bottom_contour_regularization: 1.25
+  bottom_contour_max_step_px: 8
+  bottom_contour_downward_bias: 0.20
+  bottom_contour_regularization_mix: 0.90
+  bottom_contour_deepest_strong_ratio: 0.62
   output_subdir: valid_region
 
 output:

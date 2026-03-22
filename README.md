@@ -149,7 +149,7 @@ Usa `config.yaml.example` como base.
   - `valid_region.min_region_width_ratio`: evita regiones absurdamente estrechas
   - `valid_region.depth_percentile/depth_morph_kernel/depth_min_area_ratio`: parametros del modo `central_deep_layer`
   - `valid_region.depth_layer_percentiles` + `valid_region.depth_layer_dilate_px`: expansion no uniforme por capas de profundidad (listas emparejadas)
-  - `valid_region.bottom_contour_*`: refinado opcional del borde inferior ajustandolo al gradiente vertical de profundidad (`*_search_*` define ventana de busqueda, `*_smooth_window` suaviza la curva, `*_gradient_quantile` controla sensibilidad)
+  - `valid_region.bottom_contour_*`: refinado opcional del borde inferior ajustandolo al gradiente vertical de profundidad (`*_search_*` define ventana de busqueda, `*_smooth_window` suaviza la curva, `*_gradient_quantile` controla sensibilidad, `*_regularization`/`*_max_step_px` reducen muescas, `*_downward_bias` permite bajar cuando hay empate, `*_regularization_mix` mezcla ajuste local/global, `*_deepest_strong_ratio` favorece el borde fuerte mas profundo frente a crestas intermedias)
 - `output.*`: estilo del overlay
   - `output.overlay_draw_track_labels`: dibuja el numero de `track_id` junto al inicio de cada track
   - `output.overlay_draw_track_labels_at_end`: dibuja el numero de `track_id` al final del track
