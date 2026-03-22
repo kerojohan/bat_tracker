@@ -70,9 +70,8 @@ Aquí se muestran visualizaciones de las salidas generadas:
 Ejemplos de configuracion incluidos:
 
 - `config.yaml.example` (base)
-- `config.thrutracker_like.yaml` (perfil similar a ThruTracker)
-- `config.rabella.yaml` (perfil mas sensible)
 - `config.out3_clean.yaml` (perfil limpio para escenas tipo out3 con menos ruido)
+- `config.universal.yaml` (perfil general para escenas variadas)
 
 ## Salidas
 
@@ -81,7 +80,7 @@ Se escriben en la carpeta indicada por `--output`:
 - `background.png`: fondo estimado por mediana temporal.
 - `valid_region/mask.png`: mascara binaria vertical (255 zona valida, 0 laterales invalidos).
 - `valid_region/overlay.png`: debug visual de banda valida sobre la imagen.
-- `valid_region/profile.png`: perfil horizontal (raw + suavizado + cortes).
+- `valid_region/profile.png`: debug de region valida (perfil horizontal en modo `horizontal_illumination_profile`; mapa de profundidad en modos `central_deep_layer`/`hybrid_deep_layer_profile`).
 - `tracks.csv`: trayectorias 2D por deteccion y frame.
 - `tracks_overlay.png`: trayectorias dibujadas sobre `background.png`.
 - `track_clips/` (opcional): clips de video por track (`track_0001_000120-000186.mp4`, etc.).
@@ -150,6 +149,7 @@ Usa `config.yaml.example` como base.
   - `valid_region.min_region_width_ratio`: evita regiones absurdamente estrechas
   - `valid_region.depth_percentile/depth_morph_kernel/depth_min_area_ratio`: parametros del modo `central_deep_layer`
   - `valid_region.depth_layer_percentiles` + `valid_region.depth_layer_dilate_px`: expansion no uniforme por capas de profundidad (listas emparejadas)
+  - `valid_region.bottom_contour_*`: refinado opcional del borde inferior ajustandolo al gradiente vertical de profundidad (`*_search_*` define ventana de busqueda, `*_smooth_window` suaviza la curva, `*_gradient_quantile` controla sensibilidad)
 - `output.*`: estilo del overlay
   - `output.overlay_draw_track_labels`: dibuja el numero de `track_id` junto al inicio de cada track
   - `output.overlay_draw_track_labels_at_end`: dibuja el numero de `track_id` al final del track
@@ -186,7 +186,7 @@ Los tests cubren deteccion, tracking y export/render de salida.
 
 ## Agradecimientos / Referencias
 
-Parte de los parámetros y perfiles de uso incluidos en este proyecto (como `config.thrutracker_like.yaml`) se han inspirado en el enfoque y resultados de la herramienta **[ThruTracker](https://github.com/AaronJCorcoran/ThruTracker)** desarrollada por Aaron J. Corcoran. Recomendaos consultar su repositorio en GitHub.
+Parte de los parámetros y perfiles de uso incluidos en este proyecto se han inspirado en el enfoque y resultados de la herramienta **[ThruTracker](https://github.com/AaronJCorcoran/ThruTracker)** desarrollada por Aaron J. Corcoran. Recomendaos consultar su repositorio en GitHub.
 
 ## Licencia
 
