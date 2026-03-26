@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import sys
 from collections import Counter, defaultdict, deque
 from dataclasses import asdict
 from math import ceil
@@ -14,6 +15,7 @@ import cv2
 import numpy as np
 
 from .background import compute_background_median
+from .compute import build_execution_plan
 from .config import load_config
 from .detection import detect_foreground_blobs
 from .render import render_tracks_overlay
@@ -201,6 +203,44 @@ class TemporalBurstGate:
             return False
 
         return True
+
+
+class ProgressReporter:
+    def __init__(self, enabled: bool, total_frames: int, step_percent: int):
+        self.enabled = bool(enabled) and int(total_frames) > 0
+        self.total_frames = max(0, int(total_frames))
+        self.step_percent = max(1, min(100, int(step_percent)))
+        self._next_threshold = self.step_percent
+        self._last_reported = 0
+
+    def update(self, frames_processed: int) -> None:
+        if not self.enabled:
+            return
+
+        current = max(0, int(frames_processed))
+        pct = min(100, int((100.0 * current) / max(1, self.total_frames)))
+        if pct < self._next_threshold:
+            return
+
+        self._last_reported = pct
+        self._next_threshold = ((pct // self.step_percent) + 1) * self.step_percent
+        print(
+            f"[progress] {pct}% ({current}/{self.total_frames} frames)",
+            file=sys.stderr,
+            flush=True,
+        )
+
+    def finish(self, frames_processed: int) -> None:
+        if not self.enabled:
+            return
+        if self._last_reported >= 100:
+            return
+        current = max(0, int(frames_processed))
+        print(
+            f"[progress] 100% ({current}/{self.total_frames} frames)",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def _path_length(track_points: List[TrackPoint]) -> float:
@@ -509,6 +549,15 @@ def _export_track_clips(
 
 def run_pipeline(input_video: str, output_dir: str, config_path: str | None = None) -> Dict:
     cfg = load_config(config_path)
+    execution_plan = build_execution_plan(cfg)
+    execution_cfg = cfg.get("execution", {})
+    strict_parity = bool(execution_cfg.get("strict_parity", True))
+    detection_runtime_stats: Dict[str, int] = {
+        "cuda_frames_used": 0,
+        "cuda_runtime_failures": 0,
+        "cuda_parity_checked_frames": 0,
+        "cuda_parity_mismatch_frames": 0,
+    }
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -567,15 +616,31 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     all_points: List[TrackPoint] = []
     frame_processed = 0
     suppressed_burst_frames = 0
+    progress = ProgressReporter(
+        enabled=bool(cfg["output"].get("progress_enabled", True)),
+        total_frames=meta.frame_count,
+        step_percent=int(cfg["output"].get("progress_step_percent", 5)),
+    )
 
     for frame_idx, gray in iter_gray_frames(input_video):
-        dets = detect_foreground_blobs(gray, background, cfg["detection"], valid_mask=valid_mask_for_detection)
+        dets = detect_foreground_blobs(
+            gray,
+            background,
+            cfg["detection"],
+            valid_mask=valid_mask_for_detection,
+            compute_device=execution_plan.selected_device,
+            strict_parity=strict_parity,
+            runtime_stats=detection_runtime_stats,
+        )
         if burst_gate is not None and not burst_gate.should_keep(frame_idx, len(dets)):
             dets = []
             suppressed_burst_frames += 1
         frame_points = tracker.step(frame_idx, dets)
         all_points.extend(frame_points)
         frame_processed += 1
+        progress.update(frame_processed)
+
+    progress.finish(frame_processed)
 
     filtered_points = _filter_track_points(all_points, cfg["tracking"], meta.fps, valid_mask=valid_mask)
     filtered_points, merges_applied = _auto_merge_track_points(filtered_points, cfg["tracking"])
@@ -627,6 +692,14 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             **_build_metrics(filtered_points, frame_processed),
             "frames_suppressed_temporal_burst": suppressed_burst_frames,
             "tracks_merged_auto": len(merges_applied),
+            **detection_runtime_stats,
+        },
+        "execution": {
+            "requested_device": execution_plan.requested_device,
+            "selected_device": execution_plan.selected_device,
+            "gpu_available": execution_plan.gpu_available,
+            "strict_parity": strict_parity,
+            "selection_reason": execution_plan.reason,
         },
         "outputs": {
             "background_png": str(background_path.resolve()),

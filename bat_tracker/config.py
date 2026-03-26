@@ -7,6 +7,10 @@ from typing import Any, Dict
 import yaml
 
 DEFAULT_CONFIG: Dict[str, Any] = {
+    "execution": {
+        "device": "auto",
+        "strict_parity": True,
+    },
     "background": {
         "sample_frames": 200,
         "uniform_sampling": True,
@@ -85,6 +89,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "overlay_draw_track_labels_at_end": False,
         "overlay_label_font_scale": 0.5,
         "overlay_label_thickness": 1,
+        "progress_enabled": True,
+        "progress_step_percent": 5,
         "export_track_clips": False,
         "track_clips_subdir": "track_clips",
         "track_clips_padding_frames": 0,
@@ -124,6 +130,22 @@ def load_config(path: str | Path | None) -> Dict[str, Any]:
 
 
 def _validate_config(cfg: Dict[str, Any]) -> None:
+    execution = cfg.get("execution", {})
+    if not isinstance(execution, dict):
+        raise ValueError("execution config must be a mapping/dictionary")
+    device = str(execution.get("device", "auto")).strip().lower()
+    if device not in {"auto", "cpu", "cuda"}:
+        raise ValueError(f"execution.device must be one of auto/cpu/cuda, got: {device}")
+
+    output = cfg.get("output", {})
+    if not isinstance(output, dict):
+        raise ValueError("output config must be a mapping/dictionary")
+    progress_step_percent = int(output.get("progress_step_percent", 5))
+    if progress_step_percent < 1 or progress_step_percent > 100:
+        raise ValueError(
+            f"output.progress_step_percent must be between 1 and 100, got: {progress_step_percent}"
+        )
+
     valid_region = cfg.get("valid_region", {})
     if not isinstance(valid_region, dict):
         raise ValueError("valid_region config must be a mapping/dictionary")
