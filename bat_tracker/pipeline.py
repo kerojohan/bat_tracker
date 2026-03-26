@@ -206,41 +206,64 @@ class TemporalBurstGate:
 
 
 class ProgressReporter:
-    def __init__(self, enabled: bool, total_frames: int, step_percent: int):
-        self.enabled = bool(enabled) and int(total_frames) > 0
-        self.total_frames = max(0, int(total_frames))
+    def __init__(self, enabled: bool, step_percent: int, stages: list[tuple[str, float]]):
+        self.enabled = bool(enabled) and bool(stages)
         self.step_percent = max(1, min(100, int(step_percent)))
         self._next_threshold = self.step_percent
         self._last_reported = 0
+        self._current_stage = ""
 
-    def update(self, frames_processed: int) -> None:
+        total_weight = sum(max(0.0, float(weight)) for _, weight in stages)
+        if total_weight <= 0:
+            self.enabled = False
+            self._stage_base = {}
+            self._stage_weight = {}
+            return
+
+        self._stage_base: Dict[str, float] = {}
+        self._stage_weight: Dict[str, float] = {}
+        base = 0.0
+        for stage_name, weight in stages:
+            w = max(0.0, float(weight)) / total_weight
+            self._stage_base[stage_name] = base
+            self._stage_weight[stage_name] = w
+            base += w
+
+    def start_stage(self, stage_name: str) -> None:
         if not self.enabled:
             return
+        if stage_name not in self._stage_base:
+            return
+        self._current_stage = stage_name
+        self.update_stage_fraction(stage_name, 0.0)
 
-        current = max(0, int(frames_processed))
-        pct = min(100, int((100.0 * current) / max(1, self.total_frames)))
+    def complete_stage(self, stage_name: str, detail: str | None = None) -> None:
+        self.update_stage_fraction(stage_name, 1.0, detail=detail)
+
+    def update_stage_fraction(self, stage_name: str, fraction: float, detail: str | None = None) -> None:
+        if not self.enabled:
+            return
+        if stage_name not in self._stage_base:
+            return
+        frac = max(0.0, min(1.0, float(fraction)))
+        overall = self._stage_base[stage_name] + self._stage_weight[stage_name] * frac
+        pct = min(100, int(round(overall * 100.0)))
+        self._emit(pct, detail=detail)
+
+    def _emit(self, pct: int, detail: str | None = None) -> None:
         if pct < self._next_threshold:
             return
-
         self._last_reported = pct
         self._next_threshold = ((pct // self.step_percent) + 1) * self.step_percent
-        print(
-            f"[progress] {pct}% ({current}/{self.total_frames} frames)",
-            file=sys.stderr,
-            flush=True,
-        )
+        suffix = f" - {detail}" if detail else (f" - {self._current_stage}" if self._current_stage else "")
+        print(f"[progress] {pct}%{suffix}", file=sys.stderr, flush=True)
 
-    def finish(self, frames_processed: int) -> None:
+    def finish(self) -> None:
         if not self.enabled:
             return
         if self._last_reported >= 100:
             return
-        current = max(0, int(frames_processed))
-        print(
-            f"[progress] 100% ({current}/{self.total_frames} frames)",
-            file=sys.stderr,
-            flush=True,
-        )
+        print("[progress] 100% - done", file=sys.stderr, flush=True)
 
 
 def _path_length(track_points: List[TrackPoint]) -> float:
@@ -552,6 +575,13 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     execution_plan = build_execution_plan(cfg)
     execution_cfg = cfg.get("execution", {})
     strict_parity = bool(execution_cfg.get("strict_parity", True))
+    background_runtime_stats: Dict[str, int] = {
+        "background_gpu_used": 0,
+        "background_gpu_unavailable": 0,
+        "background_gpu_failures": 0,
+        "background_gpu_parity_checked": 0,
+        "background_gpu_parity_mismatch": 0,
+    }
     detection_runtime_stats: Dict[str, int] = {
         "cuda_frames_used": 0,
         "cuda_runtime_failures": 0,
@@ -563,23 +593,42 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     out_dir.mkdir(parents=True, exist_ok=True)
 
     meta = read_video_meta(input_video)
+    valid_region_cfg = cfg.get("valid_region", {})
+    valid_region_enabled = bool(valid_region_cfg.get("enabled", False))
+    export_track_clips_enabled = bool(cfg["output"].get("export_track_clips", False))
+    progress = ProgressReporter(
+        enabled=bool(cfg["output"].get("progress_enabled", True)),
+        step_percent=int(cfg["output"].get("progress_step_percent", 5)),
+        stages=[
+            ("background", 15.0),
+            ("valid_region", 10.0 if valid_region_enabled else 0.0),
+            ("frame_processing", 55.0),
+            ("postprocess", 8.0),
+            ("exports_core", 12.0),
+            ("track_clips", 10.0 if export_track_clips_enabled else 0.0),
+        ],
+    )
 
+    progress.start_stage("background")
     background = compute_background_median(
         video_path=input_video,
         meta=meta,
         sample_frames=int(cfg["background"]["sample_frames"]),
         uniform_sampling=bool(cfg["background"]["uniform_sampling"]),
+        compute_device=execution_plan.selected_device,
+        strict_parity=strict_parity,
+        runtime_stats=background_runtime_stats,
     )
     background_path = out_dir / "background.png"
     cv2.imwrite(str(background_path), background)
+    progress.complete_stage("background", detail="background ready")
     valid_mask: np.ndarray | None = None
     valid_mask_for_detection: np.ndarray | None = None
     valid_region_meta: Dict = {"enabled": False}
     valid_region_outputs: Dict[str, str] = {}
 
-    valid_region_cfg = cfg.get("valid_region", {})
-    valid_region_enabled = bool(valid_region_cfg.get("enabled", False))
     if valid_region_enabled:
+        progress.start_stage("valid_region")
         valid_input = str(valid_region_cfg.get("input_image", "")).strip()
         if valid_input:
             valid_image = load_valid_region_image(valid_input)
@@ -604,6 +653,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "valid_region_overlay_png": str((valid_output_dir / "overlay.png").resolve()),
             "valid_region_profile_png": str((valid_output_dir / "profile.png").resolve()),
         }
+        progress.complete_stage("valid_region", detail="valid region ready")
 
     tracker = GreedyTracker(
         max_distance=float(cfg["tracking"]["max_distance"]),
@@ -616,11 +666,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     all_points: List[TrackPoint] = []
     frame_processed = 0
     suppressed_burst_frames = 0
-    progress = ProgressReporter(
-        enabled=bool(cfg["output"].get("progress_enabled", True)),
-        total_frames=meta.frame_count,
-        step_percent=int(cfg["output"].get("progress_step_percent", 5)),
-    )
+    progress.start_stage("frame_processing")
 
     for frame_idx, gray in iter_gray_frames(input_video):
         dets = detect_foreground_blobs(
@@ -638,13 +684,22 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         frame_points = tracker.step(frame_idx, dets)
         all_points.extend(frame_points)
         frame_processed += 1
-        progress.update(frame_processed)
+        if meta.frame_count > 0:
+            frame_fraction = frame_processed / float(meta.frame_count)
+            progress.update_stage_fraction(
+                "frame_processing",
+                frame_fraction,
+                detail=f"frames {frame_processed}/{meta.frame_count}",
+            )
 
-    progress.finish(frame_processed)
+    progress.complete_stage("frame_processing", detail=f"frames {frame_processed}")
 
+    progress.start_stage("postprocess")
     filtered_points = _filter_track_points(all_points, cfg["tracking"], meta.fps, valid_mask=valid_mask)
     filtered_points, merges_applied = _auto_merge_track_points(filtered_points, cfg["tracking"])
+    progress.complete_stage("postprocess", detail="postprocess done")
 
+    progress.start_stage("exports_core")
     tracks_csv_path = out_dir / "tracks.csv"
     _write_tracks_csv(tracks_csv_path, filtered_points)
 
@@ -664,9 +719,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     )
     overlay_path = out_dir / "tracks_overlay.png"
     cv2.imwrite(str(overlay_path), overlay)
+    progress.complete_stage("exports_core", detail="csv and overlay exported")
 
     track_clip_outputs: Dict[str, str] = {}
-    if bool(cfg["output"].get("export_track_clips", False)):
+    if export_track_clips_enabled:
+        progress.start_stage("track_clips")
         track_clip_outputs = _export_track_clips(
             input_video=input_video,
             output_dir=out_dir,
@@ -676,6 +733,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             clips_subdir=str(cfg["output"].get("track_clips_subdir", "track_clips")),
             pad_frames=max(0, int(cfg["output"].get("track_clips_padding_frames", 0))),
         )
+        progress.complete_stage("track_clips", detail="track clips exported")
 
     meta_payload = {
         "video": {
@@ -692,6 +750,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             **_build_metrics(filtered_points, frame_processed),
             "frames_suppressed_temporal_burst": suppressed_burst_frames,
             "tracks_merged_auto": len(merges_applied),
+            **background_runtime_stats,
             **detection_runtime_stats,
         },
         "execution": {
@@ -719,4 +778,5 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     with meta_path.open("w", encoding="utf-8") as handle:
         json.dump(meta_payload, handle, indent=2)
 
+    progress.finish()
     return meta_payload

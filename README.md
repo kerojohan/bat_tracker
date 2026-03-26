@@ -154,14 +154,15 @@ Usa `config.yaml.example` como base.
   - `output.overlay_draw_track_labels`: dibuja el numero de `track_id` junto al inicio de cada track
   - `output.overlay_draw_track_labels_at_end`: dibuja el numero de `track_id` al final del track
   - `output.overlay_label_font_scale` y `output.overlay_label_thickness`: estilo de etiqueta
-  - `output.progress_enabled`: muestra trazas de avance por consola durante el procesamiento
-  - `output.progress_step_percent`: porcentaje de avance entre trazas (1..100, por defecto `5`)
+  - `output.progress_enabled`: muestra trazas de avance global por consola durante todo el pipeline (etapas + frames)
+  - `output.progress_step_percent`: porcentaje global entre trazas (1..100, por defecto `5`)
   - `output.export_track_clips`: exporta clips por track en una carpeta
   - `output.track_clips_subdir`: nombre de la carpeta de clips dentro del output
   - `output.track_clips_padding_frames`: frames extra antes/despues del rango del track
 - `execution.*`: seleccion de backend de computo
   - `execution.device`: `auto` (default), `cpu` o `cuda`
   - `execution.strict_parity`: cuando esta en `true`, compara mascara CPU/GPU y conserva la salida CPU para mantener resultados equivalentes al pipeline original
+  - etapa extra GPU: el calculo de `background.png` por mediana usa CuPy si esta instalado; si no, cae automaticamente a CPU
 
 ## Ajuste rapido para mejorar recall/continuidad
 

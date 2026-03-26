@@ -24,6 +24,10 @@ def compute_background_median(
     meta: VideoMeta,
     sample_frames: int,
     uniform_sampling: bool,
+    *,
+    compute_device: str = "cpu",
+    strict_parity: bool = True,
+    runtime_stats: dict | None = None,
 ) -> np.ndarray:
     indices = _sample_indices(meta.frame_count, sample_frames, uniform_sampling)
     if indices.size == 0:
@@ -51,6 +55,46 @@ def compute_background_median(
     if not sampled:
         raise RuntimeError("Could not sample frames to compute background")
 
-    stack = np.stack(sampled, axis=0)
-    median = np.median(stack, axis=0)
-    return median.astype(np.uint8)
+    def _median_cpu() -> np.ndarray:
+        stack = np.stack(sampled, axis=0)
+        median = np.median(stack, axis=0)
+        return median.astype(np.uint8)
+
+    if compute_device != "cuda":
+        return _median_cpu()
+
+    try:
+        import cupy as cp  # type: ignore
+    except Exception:
+        if runtime_stats is not None:
+            runtime_stats["background_gpu_unavailable"] = runtime_stats.get("background_gpu_unavailable", 0) + 1
+        return _median_cpu()
+
+    try:
+        stack_gpu = cp.asarray(np.stack(sampled, axis=0))
+        median_gpu = cp.median(stack_gpu, axis=0)
+        background_gpu = cp.asnumpy(median_gpu).astype(np.uint8)
+
+        if strict_parity:
+            background_cpu = _median_cpu()
+            if runtime_stats is not None:
+                runtime_stats["background_gpu_parity_checked"] = runtime_stats.get(
+                    "background_gpu_parity_checked", 0
+                ) + 1
+            if np.array_equal(background_cpu, background_gpu):
+                if runtime_stats is not None:
+                    runtime_stats["background_gpu_used"] = runtime_stats.get("background_gpu_used", 0) + 1
+                return background_cpu
+            if runtime_stats is not None:
+                runtime_stats["background_gpu_parity_mismatch"] = runtime_stats.get(
+                    "background_gpu_parity_mismatch", 0
+                ) + 1
+            return background_cpu
+
+        if runtime_stats is not None:
+            runtime_stats["background_gpu_used"] = runtime_stats.get("background_gpu_used", 0) + 1
+        return background_gpu
+    except Exception:
+        if runtime_stats is not None:
+            runtime_stats["background_gpu_failures"] = runtime_stats.get("background_gpu_failures", 0) + 1
+        return _median_cpu()
