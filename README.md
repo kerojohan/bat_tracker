@@ -190,6 +190,15 @@ pytest
 
 Los tests cubren deteccion, tracking y export/render de salida.
 
+## Documentación Técnica
+
+La documentación técnica detallada se encuentra en la carpeta [`docs/`](docs/):
+
+- **[Análisis de Optimización GPU](docs/gpu-optimization-analysis.md)**: Estudio exhaustivo de estrategias de optimización GPU (Option 1-4), benchmarks, y roadmap de implementación
+- **[Resumen de Opciones GPU](docs/gpu-options-summary.md)**: Comparativa rápida de las 4 opciones de optimización
+
+Ver [`docs/README.md`](docs/README.md) para el índice completo.
+
 ## Agradecimientos / Referencias
 
 Parte de los parámetros y perfiles de uso incluidos en este proyecto se han inspirado en el enfoque y resultados de la herramienta **[ThruTracker](https://github.com/AaronJCorcoran/ThruTracker)** desarrollada por Aaron J. Corcoran. Recomendaos consultar su repositorio en GitHub.
