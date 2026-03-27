@@ -3,3 +3,7 @@ opencv-python>=4.8
 matplotlib>=3.7
 PyYAML>=6.0
 pytest>=8.0
+
+# GPU acceleration (optional):
+# pip install cupy-cuda12x>=13.0
+# Or for CUDA 11: pip install cupy-cuda11x>=13.0

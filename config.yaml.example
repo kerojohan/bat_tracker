@@ -1,6 +1,6 @@
 execution:
-  device: auto
-  strict_parity: true
+  device: auto            # auto | cpu | cuda
+  strict_parity: false    # true = recalculate on CPU and compare (debug only, forces CPU result)
 
 background:
   sample_frames: 200

@@ -9,7 +9,7 @@ from math import ceil
 from math import hypot
 from pathlib import Path
 from statistics import mean
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import cv2
 import numpy as np
@@ -663,6 +663,22 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     )
     burst_gate = TemporalBurstGate.from_detection_cfg(cfg["detection"])
 
+    # Pre-upload blurred background to GPU to avoid repeated CPU→GPU transfers.
+    # Blur is done on CPU (OpenCV SIMD), so we pre-blur and upload once.
+    bg_gpu: Any = None
+    if execution_plan.selected_device == "cuda":
+        try:
+            import cupy as cp  # type: ignore
+            blur_kernel = int(cfg["detection"].get("blur_kernel", 5))
+            if blur_kernel > 1 and blur_kernel % 2 == 1:
+                bg_blurred = cv2.GaussianBlur(background, (blur_kernel, blur_kernel), 0)
+            else:
+                bg_blurred = background
+            bg_gpu = cp.asarray(bg_blurred)
+            print(f"[pipeline] blurred background pre-uploaded to GPU ({background.shape})", file=sys.stderr, flush=True)
+        except Exception:
+            bg_gpu = None
+
     all_points: List[TrackPoint] = []
     frame_processed = 0
     suppressed_burst_frames = 0
@@ -677,6 +693,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             compute_device=execution_plan.selected_device,
             strict_parity=strict_parity,
             runtime_stats=detection_runtime_stats,
+            bg_gpu=bg_gpu,
         )
         if burst_gate is not None and not burst_gate.should_keep(frame_idx, len(dets)):
             dets = []

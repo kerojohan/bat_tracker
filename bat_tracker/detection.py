@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from dataclasses import dataclass
 from typing import List
 
@@ -17,6 +18,10 @@ class Detection:
     bbox_y2: int
     area: float
 
+
+# ---------------------------------------------------------------------------
+# CPU path (original, unchanged)
+# ---------------------------------------------------------------------------
 
 def _prepare_frame_and_background(
     frame_gray: np.ndarray,
@@ -64,7 +69,42 @@ def _binary_cpu(
     return binary, frame_proc, bg_proc
 
 
-def _binary_cuda(
+# ---------------------------------------------------------------------------
+# GPU path via CuPy
+# ---------------------------------------------------------------------------
+
+def _otsu_threshold_from_histogram(hist: np.ndarray) -> int:
+    """Compute Otsu threshold from a 256-bin histogram (runs on CPU, O(256))."""
+    hist = hist.astype(np.float64)
+    total = hist.sum()
+    if total <= 0:
+        return 0
+
+    sum_total = np.dot(np.arange(256, dtype=np.float64), hist)
+    sum_bg = 0.0
+    weight_bg = 0.0
+    max_variance = 0.0
+    best_thr = 0
+
+    for t in range(256):
+        weight_bg += hist[t]
+        if weight_bg == 0:
+            continue
+        weight_fg = total - weight_bg
+        if weight_fg == 0:
+            break
+        sum_bg += t * hist[t]
+        mean_bg = sum_bg / weight_bg
+        mean_fg = (sum_total - sum_bg) / weight_fg
+        variance = weight_bg * weight_fg * (mean_bg - mean_fg) ** 2
+        if variance > max_variance:
+            max_variance = variance
+            best_thr = t
+
+    return best_thr
+
+
+def _binary_cupy(
     frame_gray: np.ndarray,
     background: np.ndarray,
     *,
@@ -74,41 +114,64 @@ def _binary_cuda(
     otsu_offset: int,
     morph_open: int,
     morph_close: int,
-) -> np.ndarray:
-    gpu_frame = cv2.cuda_GpuMat()
-    gpu_bg = cv2.cuda_GpuMat()
-    gpu_frame.upload(frame_gray)
-    gpu_bg.upload(background)
+    bg_gpu=None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """GPU-accelerated binary mask computation using CuPy.
 
-    gpu_frame_proc = gpu_frame
-    gpu_bg_proc = gpu_bg
+    Strategy: blur and morphology on CPU (OpenCV, SIMD-fast, no CUDA JIT needed),
+    absdiff + threshold on GPU (CuPy pre-compiled kernels, no JIT needed).
 
-    if blur_kernel > 1 and blur_kernel % 2 == 1:
-        blur = cv2.cuda.createGaussianFilter(cv2.CV_8UC1, cv2.CV_8UC1, (blur_kernel, blur_kernel), 0)
-        gpu_frame_proc = blur.apply(gpu_frame)
-        gpu_bg_proc = blur.apply(gpu_bg)
+    Parameters
+    ----------
+    bg_gpu : cupy.ndarray or None
+        Pre-uploaded *blurred* background on GPU. If None, will upload from *background*.
+    """
+    import cupy as cp  # type: ignore
 
-    gpu_diff = cv2.cuda.absdiff(gpu_frame_proc, gpu_bg_proc)
+    # --- Blur on CPU (OpenCV uses SIMD, very fast, avoids CUDA JIT) ---
+    frame_proc, bg_proc = _prepare_frame_and_background(frame_gray, background, blur_kernel)
 
-    if threshold_mode == "otsu":
-        otsu_thr, _ = cv2.cuda.threshold(gpu_diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        thr = max(1, min(255, int(otsu_thr + otsu_offset)))
-        _, gpu_binary = cv2.cuda.threshold(gpu_diff, thr, 255, cv2.THRESH_BINARY)
+    # --- Upload blurred images to GPU ---
+    frame_proc_gpu = cp.asarray(frame_proc)
+    if bg_gpu is not None:
+        bg_proc_gpu = bg_gpu
     else:
-        _, gpu_binary = cv2.cuda.threshold(gpu_diff, diff_threshold, 255, cv2.THRESH_BINARY)
+        bg_proc_gpu = cp.asarray(bg_proc)
 
+    # --- Absdiff on GPU (pre-compiled kernel, no JIT) ---
+    diff_gpu = cp.abs(
+        frame_proc_gpu.astype(cp.int16) - bg_proc_gpu.astype(cp.int16)
+    ).astype(cp.uint8)
+
+    # --- Threshold on GPU ---
+    if threshold_mode == "otsu":
+        # Histogram on GPU, Otsu computation on CPU (O(256), instant)
+        hist_gpu = cp.histogram(diff_gpu, bins=256, range=(0, 256))[0]
+        hist_cpu = cp.asnumpy(hist_gpu)
+        otsu_thr = _otsu_threshold_from_histogram(hist_cpu)
+        thr = max(1, min(255, int(otsu_thr + otsu_offset)))
+    else:
+        thr = diff_threshold
+    binary_gpu = cp.where(diff_gpu > thr, cp.uint8(255), cp.uint8(0))
+
+    # --- Download binary mask to CPU ---
+    binary = cp.asnumpy(binary_gpu)
+
+    # --- Morphology on CPU (OpenCV, operates on small binary mask) ---
     if morph_open > 1:
         k_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morph_open, morph_open))
-        morph_open_op = cv2.cuda.createMorphologyFilter(cv2.MORPH_OPEN, cv2.CV_8UC1, k_open)
-        gpu_binary = morph_open_op.apply(gpu_binary)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, k_open)
 
     if morph_close > 1:
         k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morph_close, morph_close))
-        morph_close_op = cv2.cuda.createMorphologyFilter(cv2.MORPH_CLOSE, cv2.CV_8UC1, k_close)
-        gpu_binary = morph_close_op.apply(gpu_binary)
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, k_close)
 
-    return gpu_binary.download()
+    return binary, frame_proc, bg_proc
 
+
+# ---------------------------------------------------------------------------
+# Contour extraction (always CPU — no good GPU equivalent)
+# ---------------------------------------------------------------------------
 
 def _extract_detections_from_binary(
     binary: np.ndarray,
@@ -184,6 +247,10 @@ def _extract_detections_from_binary(
     return detections
 
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def detect_foreground_blobs(
     frame_gray: np.ndarray,
     background: np.ndarray,
@@ -191,8 +258,9 @@ def detect_foreground_blobs(
     valid_mask: np.ndarray | None = None,
     *,
     compute_device: str = "cpu",
-    strict_parity: bool = True,
+    strict_parity: bool = False,
     runtime_stats: dict | None = None,
+    bg_gpu=None,
 ) -> List[Detection]:
     blur_kernel = int(cfg.get("blur_kernel", 5))
     threshold_mode = str(cfg.get("threshold_mode", "fixed")).lower()
@@ -216,7 +284,7 @@ def detect_foreground_blobs(
 
     if compute_device == "cuda":
         try:
-            binary_cuda = _binary_cuda(
+            binary_gpu, frame_proc_gpu, bg_proc_gpu = _binary_cupy(
                 frame_gray,
                 background,
                 blur_kernel=blur_kernel,
@@ -225,6 +293,7 @@ def detect_foreground_blobs(
                 otsu_offset=otsu_offset,
                 morph_open=morph_open,
                 morph_close=morph_close,
+                bg_gpu=bg_gpu,
             )
 
             if strict_parity:
@@ -240,20 +309,24 @@ def detect_foreground_blobs(
                 )
                 if runtime_stats is not None:
                     runtime_stats["cuda_parity_checked_frames"] = runtime_stats.get("cuda_parity_checked_frames", 0) + 1
-                if np.array_equal(binary_cpu, binary_cuda):
+                if np.array_equal(binary_cpu, binary_gpu):
                     binary = binary_cpu
                 else:
                     if runtime_stats is not None:
                         runtime_stats["cuda_parity_mismatch_frames"] = runtime_stats.get("cuda_parity_mismatch_frames", 0) + 1
                     binary = binary_cpu
             else:
-                binary = binary_cuda
-                frame_proc, bg_proc = _prepare_frame_and_background(frame_gray, background, blur_kernel)
+                binary = binary_gpu
+                frame_proc = frame_proc_gpu
+                bg_proc = bg_proc_gpu
                 if runtime_stats is not None:
                     runtime_stats["cuda_frames_used"] = runtime_stats.get("cuda_frames_used", 0) + 1
-        except Exception:
+        except Exception as exc:
             if runtime_stats is not None:
                 runtime_stats["cuda_runtime_failures"] = runtime_stats.get("cuda_runtime_failures", 0) + 1
+            # Log only first failure to avoid flooding
+            if runtime_stats is not None and runtime_stats.get("cuda_runtime_failures", 0) <= 1:
+                print(f"[detection] GPU fallback to CPU: {exc}", file=sys.stderr, flush=True)
             binary, frame_proc, bg_proc = _binary_cpu(
                 frame_gray,
                 background,
