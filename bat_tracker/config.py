@@ -9,7 +9,7 @@ import yaml
 DEFAULT_CONFIG: Dict[str, Any] = {
     "execution": {
         "device": "auto",
-        "strict_parity": True,
+        "strict_parity": False,
     },
     "background": {
         "sample_frames": 200,

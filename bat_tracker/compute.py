@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict
 
-import cv2
+import sys
 
 
 @dataclass
@@ -14,27 +14,30 @@ class ExecutionPlan:
     reason: str
 
 
-def _opencv_cuda_available() -> tuple[bool, str]:
-    if not hasattr(cv2, "cuda"):
-        return False, "opencv_cuda_namespace_missing"
+def _cupy_cuda_available() -> tuple[bool, str]:
+    """Check if CuPy is installed and can see a CUDA device."""
+    try:
+        import cupy as cp  # type: ignore
+    except ImportError:
+        return False, "cupy_not_installed"
+    except Exception as exc:
+        return False, f"cupy_import_failed:{exc.__class__.__name__}"
 
     try:
-        count = int(cv2.cuda.getCudaEnabledDeviceCount())
+        device_count = cp.cuda.runtime.getDeviceCount()
     except Exception as exc:
-        return False, f"opencv_cuda_probe_failed:{exc.__class__.__name__}"
+        return False, f"cupy_device_probe_failed:{exc.__class__.__name__}"
 
-    if count <= 0:
+    if device_count <= 0:
         return False, "no_cuda_device"
 
-    required = ["createGaussianFilter", "createMorphologyFilter", "threshold", "absdiff"]
-    missing = [name for name in required if not hasattr(cv2.cuda, name)]
-    if missing:
-        return False, "missing_cuda_ops:" + ",".join(missing)
+    # Quick smoke test – allocate a tiny array on GPU
+    try:
+        _ = cp.array([1, 2, 3]).sum()
+    except Exception as exc:
+        return False, f"cupy_smoke_test_failed:{exc.__class__.__name__}"
 
-    if not hasattr(cv2, "cuda_GpuMat"):
-        return False, "cuda_gpumat_missing"
-
-    return True, "cuda_ready"
+    return True, "cupy_cuda_ready"
 
 
 def build_execution_plan(cfg: Dict) -> ExecutionPlan:
@@ -44,42 +47,53 @@ def build_execution_plan(cfg: Dict) -> ExecutionPlan:
     if requested not in {"auto", "cpu", "cuda"}:
         requested = "auto"
 
-    gpu_available, gpu_reason = _opencv_cuda_available()
+    gpu_available, gpu_reason = _cupy_cuda_available()
 
     if requested == "cpu":
-        return ExecutionPlan(
+        plan = ExecutionPlan(
             requested_device=requested,
             selected_device="cpu",
             gpu_available=gpu_available,
             reason="forced_cpu",
         )
+        print(f"[compute] device=cpu (forced) | gpu_available={gpu_available}", file=sys.stderr, flush=True)
+        return plan
 
     if requested == "cuda":
         if gpu_available:
-            return ExecutionPlan(
+            plan = ExecutionPlan(
                 requested_device=requested,
                 selected_device="cuda",
                 gpu_available=True,
                 reason="forced_cuda",
             )
-        return ExecutionPlan(
+            print("[compute] device=cuda (forced) | cupy ready", file=sys.stderr, flush=True)
+            return plan
+        plan = ExecutionPlan(
             requested_device=requested,
             selected_device="cpu",
             gpu_available=False,
             reason=f"cuda_requested_but_unavailable:{gpu_reason}",
         )
+        print(f"[compute] device=cpu (cuda requested but unavailable: {gpu_reason})", file=sys.stderr, flush=True)
+        return plan
 
+    # auto mode
     if gpu_available:
-        return ExecutionPlan(
+        plan = ExecutionPlan(
             requested_device=requested,
             selected_device="cuda",
             gpu_available=True,
             reason="auto_cuda",
         )
+        print("[compute] device=cuda (auto-detected via cupy)", file=sys.stderr, flush=True)
+        return plan
 
-    return ExecutionPlan(
+    plan = ExecutionPlan(
         requested_device=requested,
         selected_device="cpu",
         gpu_available=False,
         reason=f"auto_cpu:{gpu_reason}",
     )
+    print(f"[compute] device=cpu (auto, reason: {gpu_reason})", file=sys.stderr, flush=True)
+    return plan

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from typing import List
 
 import cv2
@@ -26,7 +27,7 @@ def compute_background_median(
     uniform_sampling: bool,
     *,
     compute_device: str = "cpu",
-    strict_parity: bool = True,
+    strict_parity: bool = False,
     runtime_stats: dict | None = None,
 ) -> np.ndarray:
     indices = _sample_indices(meta.frame_count, sample_frames, uniform_sampling)
@@ -68,9 +69,11 @@ def compute_background_median(
     except Exception:
         if runtime_stats is not None:
             runtime_stats["background_gpu_unavailable"] = runtime_stats.get("background_gpu_unavailable", 0) + 1
+        print("[background] CuPy not available, falling back to CPU median", file=sys.stderr, flush=True)
         return _median_cpu()
 
     try:
+        # Upload all sampled frames to GPU at once
         stack_gpu = cp.asarray(np.stack(sampled, axis=0))
         median_gpu = cp.median(stack_gpu, axis=0)
         background_gpu = cp.asnumpy(median_gpu).astype(np.uint8)
@@ -93,8 +96,10 @@ def compute_background_median(
 
         if runtime_stats is not None:
             runtime_stats["background_gpu_used"] = runtime_stats.get("background_gpu_used", 0) + 1
+        print(f"[background] GPU median computed ({len(sampled)} frames)", file=sys.stderr, flush=True)
         return background_gpu
-    except Exception:
+    except Exception as exc:
         if runtime_stats is not None:
             runtime_stats["background_gpu_failures"] = runtime_stats.get("background_gpu_failures", 0) + 1
+        print(f"[background] GPU median failed ({exc}), falling back to CPU", file=sys.stderr, flush=True)
         return _median_cpu()
