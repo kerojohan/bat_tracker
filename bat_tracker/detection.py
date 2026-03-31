@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from time import perf_counter
 from typing import List
 
 import cv2
 import numpy as np
+
+from .perf import PerformanceCollector
 
 
 @dataclass
@@ -23,6 +26,9 @@ class DetectionContext:
     background: np.ndarray
     bg_proc: np.ndarray
     bg_proc_view: np.ndarray
+    frame_blur_buf: np.ndarray | None
+    diff_buf: np.ndarray
+    blur_kernel_1d: np.ndarray | None
     blur_kernel: int
     threshold_mode: str
     diff_threshold: int
@@ -79,6 +85,14 @@ def build_detection_context(background: np.ndarray, cfg: dict) -> DetectionConte
     else:
         bg_proc = background
 
+    bg_proc_view = bg_proc[process_y0:process_y1, process_x0:process_x1]
+    frame_blur_buf = None
+    blur_kernel_1d = None
+    if blur_kernel > 1 and blur_kernel % 2 == 1:
+        frame_blur_buf = np.empty_like(bg_proc_view)
+        blur_kernel_1d = cv2.getGaussianKernel(blur_kernel, 0)
+    diff_buf = np.empty_like(bg_proc_view)
+
     k_open = None
     if morph_open > 1:
         k_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morph_open, morph_open))
@@ -90,7 +104,10 @@ def build_detection_context(background: np.ndarray, cfg: dict) -> DetectionConte
     return DetectionContext(
         background=background,
         bg_proc=bg_proc,
-        bg_proc_view=bg_proc[process_y0:process_y1, process_x0:process_x1],
+        bg_proc_view=bg_proc_view,
+        frame_blur_buf=frame_blur_buf,
+        diff_buf=diff_buf,
+        blur_kernel_1d=blur_kernel_1d,
         blur_kernel=blur_kernel,
         threshold_mode=threshold_mode,
         diff_threshold=diff_threshold,
@@ -115,13 +132,23 @@ def build_detection_context(background: np.ndarray, cfg: dict) -> DetectionConte
         process_area=max(1, (process_x1 - process_x0) * (process_y1 - process_y0)),
     )
 
-
 def _prepare_frame(
     frame_gray: np.ndarray,
     blur_kernel: int,
+    blur_kernel_1d: np.ndarray | None = None,
+    out: np.ndarray | None = None,
+    perf: PerformanceCollector | None = None,
+    frame_idx: int | None = None,
 ) -> np.ndarray:
     if blur_kernel > 1 and blur_kernel % 2 == 1:
-        return cv2.GaussianBlur(frame_gray, (blur_kernel, blur_kernel), 0)
+        started = perf_counter()
+        if blur_kernel_1d is not None:
+            out = cv2.sepFilter2D(frame_gray, -1, blur_kernel_1d, blur_kernel_1d, dst=out)
+        else:
+            out = cv2.GaussianBlur(frame_gray, (blur_kernel, blur_kernel), 0, dst=out)
+        if perf is not None:
+            perf.record("gaussian_blur", perf_counter() - started, frame_idx=frame_idx)
+        return out
     return frame_gray
 
 
@@ -141,6 +168,8 @@ def _prepare_frame_and_background(
 def _binary_cpu(
     frame_gray: np.ndarray,
     ctx: DetectionContext,
+    perf: PerformanceCollector | None = None,
+    frame_idx: int | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     blur_kernel = ctx.blur_kernel
     threshold_mode = ctx.threshold_mode
@@ -154,26 +183,50 @@ def _binary_cpu(
     process_y1 = ctx.process_y1
 
     frame_view = frame_gray[process_y0:process_y1, process_x0:process_x1]
-    frame_proc = _prepare_frame(frame_view, blur_kernel)
+    frame_proc = _prepare_frame(
+        frame_view,
+        blur_kernel,
+        blur_kernel_1d=ctx.blur_kernel_1d,
+        out=ctx.frame_blur_buf,
+        perf=perf,
+        frame_idx=frame_idx,
+    )
     bg_proc = ctx.bg_proc_view
 
-    diff = cv2.absdiff(frame_proc, bg_proc)
+    absdiff_started = perf_counter()
+    diff = cv2.absdiff(frame_proc, bg_proc, dst=ctx.diff_buf)
+    if perf is not None:
+        perf.record("background_absdiff", perf_counter() - absdiff_started, frame_idx=frame_idx)
+
+    threshold_started = perf_counter()
     if threshold_mode == "otsu":
         otsu_thr, _ = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         thr = max(1, min(255, int(otsu_thr + otsu_offset)))
         _, binary = cv2.threshold(diff, thr, 255, cv2.THRESH_BINARY)
     else:
-        _, binary = cv2.threshold(diff, diff_threshold, 255, cv2.THRESH_BINARY)
+        _, binary = cv2.threshold(diff, diff_threshold, 255, cv2.THRESH_BINARY, dst=ctx.diff_buf)
+    if perf is not None:
+        perf.record("threshold", perf_counter() - threshold_started, frame_idx=frame_idx)
 
     fg_count = int(cv2.countNonZero(binary))
     if fg_count == 0:
         return binary, frame_proc, bg_proc, 0
 
+    morph_total = 0.0
+    morph_exec = 0
     if k_open is not None:
+        morph_started = perf_counter()
         binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, k_open)
+        morph_total += perf_counter() - morph_started
+        morph_exec += 1
 
     if k_close is not None:
+        morph_started = perf_counter()
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, k_close)
+        morph_total += perf_counter() - morph_started
+        morph_exec += 1
+    if perf is not None and morph_exec > 0:
+        perf.record("morphology", morph_total, frame_idx=frame_idx, executions=morph_exec)
 
     fg_count = int(cv2.countNonZero(binary))
     return binary, frame_proc, bg_proc, fg_count
@@ -232,6 +285,8 @@ def _extract_detections_from_binary(
     ctx: DetectionContext,
     valid_mask: np.ndarray | None,
     fg_count: int | None = None,
+    perf: PerformanceCollector | None = None,
+    frame_idx: int | None = None,
 ) -> List[Detection]:
     max_global_intensity_shift = ctx.max_global_intensity_shift
     max_foreground_ratio = ctx.max_foreground_ratio
@@ -261,7 +316,10 @@ def _extract_detections_from_binary(
         if fg_ratio > max_foreground_ratio:
             return []
 
+    contours_started = perf_counter()
     contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if perf is not None:
+        perf.record("find_contours", perf_counter() - contours_started, frame_idx=frame_idx)
 
     detections: List[Detection] = []
     for contour in contours:
@@ -320,6 +378,8 @@ def detect_foreground_blobs(
     strict_parity: bool = True,
     runtime_stats: dict | None = None,
     context: DetectionContext | None = None,
+    frame_idx: int | None = None,
+    perf: PerformanceCollector | None = None,
 ) -> List[Detection]:
     ctx = context if context is not None else build_detection_context(background, cfg)
     bg = ctx.background
@@ -349,7 +409,12 @@ def detect_foreground_blobs(
             )
 
             if strict_parity:
-                binary_cpu, frame_proc, bg_proc, fg_count = _binary_cpu(frame_gray, ctx)
+                binary_cpu, frame_proc, bg_proc, fg_count = _binary_cpu(
+                    frame_gray,
+                    ctx,
+                    perf=perf,
+                    frame_idx=frame_idx,
+                )
                 if runtime_stats is not None:
                     runtime_stats["cuda_parity_checked_frames"] = runtime_stats.get("cuda_parity_checked_frames", 0) + 1
                 if np.array_equal(binary_cpu, binary_cuda):
@@ -361,16 +426,32 @@ def detect_foreground_blobs(
             else:
                 binary = binary_cuda
                 frame_view = frame_gray[ctx.process_y0:ctx.process_y1, ctx.process_x0:ctx.process_x1]
-                frame_proc = _prepare_frame(frame_view, blur_kernel)
+                frame_proc = _prepare_frame(
+                    frame_view,
+                    blur_kernel,
+                    blur_kernel_1d=ctx.blur_kernel_1d,
+                    perf=perf,
+                    frame_idx=frame_idx,
+                )
                 bg_proc = ctx.bg_proc_view
                 if runtime_stats is not None:
                     runtime_stats["cuda_frames_used"] = runtime_stats.get("cuda_frames_used", 0) + 1
         except Exception:
             if runtime_stats is not None:
                 runtime_stats["cuda_runtime_failures"] = runtime_stats.get("cuda_runtime_failures", 0) + 1
-            binary, frame_proc, bg_proc, fg_count = _binary_cpu(frame_gray, ctx)
+            binary, frame_proc, bg_proc, fg_count = _binary_cpu(
+                frame_gray,
+                ctx,
+                perf=perf,
+                frame_idx=frame_idx,
+            )
     else:
-        binary, frame_proc, bg_proc, fg_count = _binary_cpu(frame_gray, ctx)
+        binary, frame_proc, bg_proc, fg_count = _binary_cpu(
+            frame_gray,
+            ctx,
+            perf=perf,
+            frame_idx=frame_idx,
+        )
 
     return _extract_detections_from_binary(
         binary,
@@ -379,4 +460,6 @@ def detect_foreground_blobs(
         ctx=ctx,
         valid_mask=valid_mask,
         fg_count=fg_count,
+        perf=perf,
+        frame_idx=frame_idx,
     )
