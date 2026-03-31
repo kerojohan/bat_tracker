@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import hypot
 from typing import Dict, List, Tuple
 
 from .detection import Detection
@@ -38,6 +37,7 @@ class ActiveTrack:
 class GreedyTracker:
     def __init__(self, max_distance: float, max_missed: int, fps: float, video_id: str):
         self.max_distance = float(max_distance)
+        self.max_distance_sq = self.max_distance * self.max_distance
         self.max_missed = int(max_missed)
         self.fps = float(fps)
         self.video_id = video_id
@@ -51,14 +51,17 @@ class GreedyTracker:
         unmatched_det_idxs = set(range(len(detections)))
 
         candidate_pairs: List[Tuple[float, int, int]] = []
+        max_distance_sq = self.max_distance_sq
         for track_id, track in self._active.items():
             dt_pred = max(1, frame_idx - track.last_frame) / self.fps
             pred_x = track.x + track.vx * dt_pred
             pred_y = track.y + track.vy * dt_pred
             for det_idx, det in enumerate(detections):
-                d = hypot(pred_x - det.x, pred_y - det.y)
-                if d <= self.max_distance:
-                    candidate_pairs.append((d, track_id, det_idx))
+                dx = pred_x - det.x
+                dy = pred_y - det.y
+                d_sq = dx * dx + dy * dy
+                if d_sq <= max_distance_sq:
+                    candidate_pairs.append((d_sq, track_id, det_idx))
 
         candidate_pairs.sort(key=lambda t: t[0])
         assignments: List[Tuple[int, int]] = []

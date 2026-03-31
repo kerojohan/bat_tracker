@@ -17,6 +17,7 @@ import numpy as np
 from .background import compute_background_median
 from .compute import build_execution_plan
 from .config import load_config
+from .detection import build_detection_context
 from .detection import detect_foreground_blobs
 from .render import render_tracks_overlay
 from .tracker import GreedyTracker, TrackPoint
@@ -662,6 +663,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         video_id=meta.video_id,
     )
     burst_gate = TemporalBurstGate.from_detection_cfg(cfg["detection"])
+    detection_context = build_detection_context(background, cfg["detection"])
 
     all_points: List[TrackPoint] = []
     frame_processed = 0
@@ -677,6 +679,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             compute_device=execution_plan.selected_device,
             strict_parity=strict_parity,
             runtime_stats=detection_runtime_stats,
+            context=detection_context,
         )
         if burst_gate is not None and not burst_gate.should_keep(frame_idx, len(dets)):
             dets = []

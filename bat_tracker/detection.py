@@ -18,32 +18,144 @@ class Detection:
     area: float
 
 
+@dataclass(frozen=True)
+class DetectionContext:
+    background: np.ndarray
+    bg_proc: np.ndarray
+    bg_proc_view: np.ndarray
+    blur_kernel: int
+    threshold_mode: str
+    diff_threshold: int
+    otsu_offset: int
+    morph_open: int
+    morph_close: int
+    min_area: float
+    max_area: float
+    max_global_intensity_shift: float
+    max_foreground_ratio: float
+    max_detections_per_frame: int
+    roi_x_min: float
+    roi_x_max: float
+    roi_y_min: float
+    roi_y_max: float
+    k_open: np.ndarray | None
+    k_close: np.ndarray | None
+    process_x0: int
+    process_x1: int
+    process_y0: int
+    process_y1: int
+    process_area: int
+
+
+def build_detection_context(background: np.ndarray, cfg: dict) -> DetectionContext:
+    height, width = background.shape[:2]
+    blur_kernel = int(cfg.get("blur_kernel", 5))
+    threshold_mode = str(cfg.get("threshold_mode", "fixed")).lower()
+    diff_threshold = int(cfg.get("diff_threshold", 25))
+    otsu_offset = int(cfg.get("otsu_offset", 0))
+    morph_open = int(cfg.get("morph_open", 3))
+    morph_close = int(cfg.get("morph_close", 5))
+    roi_x_min = float(cfg.get("roi_x_min", -1))
+    roi_x_max = float(cfg.get("roi_x_max", -1))
+    roi_y_min = float(cfg.get("roi_y_min", -1))
+    roi_y_max = float(cfg.get("roi_y_max", -1))
+
+    pad = max(16, blur_kernel + morph_open + morph_close)
+    process_x0 = 0
+    process_x1 = width
+    process_y0 = 0
+    process_y1 = height
+    if roi_x_min >= 0:
+        process_x0 = max(0, int(np.floor(roi_x_min)) - pad)
+    if roi_x_max >= 0:
+        process_x1 = min(width, int(np.ceil(roi_x_max)) + pad + 1)
+    if roi_y_min >= 0:
+        process_y0 = max(0, int(np.floor(roi_y_min)) - pad)
+    if roi_y_max >= 0:
+        process_y1 = min(height, int(np.ceil(roi_y_max)) + pad + 1)
+
+    if blur_kernel > 1 and blur_kernel % 2 == 1:
+        bg_proc = cv2.GaussianBlur(background, (blur_kernel, blur_kernel), 0)
+    else:
+        bg_proc = background
+
+    k_open = None
+    if morph_open > 1:
+        k_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morph_open, morph_open))
+
+    k_close = None
+    if morph_close > 1:
+        k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morph_close, morph_close))
+
+    return DetectionContext(
+        background=background,
+        bg_proc=bg_proc,
+        bg_proc_view=bg_proc[process_y0:process_y1, process_x0:process_x1],
+        blur_kernel=blur_kernel,
+        threshold_mode=threshold_mode,
+        diff_threshold=diff_threshold,
+        otsu_offset=otsu_offset,
+        morph_open=morph_open,
+        morph_close=morph_close,
+        min_area=float(cfg.get("min_area", 10)),
+        max_area=float(cfg.get("max_area", 5000)),
+        max_global_intensity_shift=float(cfg.get("max_global_intensity_shift", -1)),
+        max_foreground_ratio=float(cfg.get("max_foreground_ratio", -1)),
+        max_detections_per_frame=int(cfg.get("max_detections_per_frame", 0)),
+        roi_x_min=roi_x_min,
+        roi_x_max=roi_x_max,
+        roi_y_min=roi_y_min,
+        roi_y_max=roi_y_max,
+        k_open=k_open,
+        k_close=k_close,
+        process_x0=process_x0,
+        process_x1=process_x1,
+        process_y0=process_y0,
+        process_y1=process_y1,
+        process_area=max(1, (process_x1 - process_x0) * (process_y1 - process_y0)),
+    )
+
+
+def _prepare_frame(
+    frame_gray: np.ndarray,
+    blur_kernel: int,
+) -> np.ndarray:
+    if blur_kernel > 1 and blur_kernel % 2 == 1:
+        return cv2.GaussianBlur(frame_gray, (blur_kernel, blur_kernel), 0)
+    return frame_gray
+
+
 def _prepare_frame_and_background(
     frame_gray: np.ndarray,
     background: np.ndarray,
     blur_kernel: int,
 ) -> tuple[np.ndarray, np.ndarray]:
+    frame_proc = _prepare_frame(frame_gray, blur_kernel)
     if blur_kernel > 1 and blur_kernel % 2 == 1:
-        frame_proc = cv2.GaussianBlur(frame_gray, (blur_kernel, blur_kernel), 0)
         bg_proc = cv2.GaussianBlur(background, (blur_kernel, blur_kernel), 0)
     else:
-        frame_proc = frame_gray
         bg_proc = background
     return frame_proc, bg_proc
 
 
 def _binary_cpu(
     frame_gray: np.ndarray,
-    background: np.ndarray,
-    *,
-    blur_kernel: int,
-    threshold_mode: str,
-    diff_threshold: int,
-    otsu_offset: int,
-    morph_open: int,
-    morph_close: int,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    frame_proc, bg_proc = _prepare_frame_and_background(frame_gray, background, blur_kernel)
+    ctx: DetectionContext,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
+    blur_kernel = ctx.blur_kernel
+    threshold_mode = ctx.threshold_mode
+    diff_threshold = ctx.diff_threshold
+    otsu_offset = ctx.otsu_offset
+    k_open = ctx.k_open
+    k_close = ctx.k_close
+    process_x0 = ctx.process_x0
+    process_x1 = ctx.process_x1
+    process_y0 = ctx.process_y0
+    process_y1 = ctx.process_y1
+
+    frame_view = frame_gray[process_y0:process_y1, process_x0:process_x1]
+    frame_proc = _prepare_frame(frame_view, blur_kernel)
+    bg_proc = ctx.bg_proc_view
 
     diff = cv2.absdiff(frame_proc, bg_proc)
     if threshold_mode == "otsu":
@@ -53,15 +165,18 @@ def _binary_cpu(
     else:
         _, binary = cv2.threshold(diff, diff_threshold, 255, cv2.THRESH_BINARY)
 
-    if morph_open > 1:
-        k_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morph_open, morph_open))
+    fg_count = int(cv2.countNonZero(binary))
+    if fg_count == 0:
+        return binary, frame_proc, bg_proc, 0
+
+    if k_open is not None:
         binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, k_open)
 
-    if morph_close > 1:
-        k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (morph_close, morph_close))
+    if k_close is not None:
         binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, k_close)
 
-    return binary, frame_proc, bg_proc
+    fg_count = int(cv2.countNonZero(binary))
+    return binary, frame_proc, bg_proc, fg_count
 
 
 def _binary_cuda(
@@ -114,26 +229,35 @@ def _extract_detections_from_binary(
     binary: np.ndarray,
     frame_proc: np.ndarray,
     bg_proc: np.ndarray,
-    *,
-    min_area: float,
-    max_area: float,
-    max_global_intensity_shift: float,
-    max_foreground_ratio: float,
-    max_detections_per_frame: int,
-    roi_x_min: float,
-    roi_x_max: float,
-    roi_y_min: float,
-    roi_y_max: float,
+    ctx: DetectionContext,
     valid_mask: np.ndarray | None,
+    fg_count: int | None = None,
 ) -> List[Detection]:
+    max_global_intensity_shift = ctx.max_global_intensity_shift
+    max_foreground_ratio = ctx.max_foreground_ratio
+    min_area = ctx.min_area
+    max_area = ctx.max_area
+    roi_x_min = ctx.roi_x_min
+    roi_x_max = ctx.roi_x_max
+    roi_y_min = ctx.roi_y_min
+    roi_y_max = ctx.roi_y_max
+    max_detections_per_frame = ctx.max_detections_per_frame
+    process_x0 = ctx.process_x0
+    process_y0 = ctx.process_y0
+
     if max_global_intensity_shift >= 0:
         frame_mean = float(np.mean(frame_proc))
         bg_mean = float(np.mean(bg_proc))
         if abs(frame_mean - bg_mean) > max_global_intensity_shift:
             return []
 
+    if fg_count is None:
+        fg_count = int(cv2.countNonZero(binary))
+    if fg_count == 0:
+        return []
+
     if max_foreground_ratio > 0:
-        fg_ratio = float(np.count_nonzero(binary)) / float(binary.size)
+        fg_ratio = float(fg_count) / float(ctx.process_area)
         if fg_ratio > max_foreground_ratio:
             return []
 
@@ -145,6 +269,8 @@ def _extract_detections_from_binary(
         if area < min_area or area > max_area:
             continue
         x, y, w, h = cv2.boundingRect(contour)
+        x += process_x0
+        y += process_y0
         cx = float(x + w / 2.0)
         cy = float(y + h / 2.0)
         if valid_mask is not None:
@@ -193,32 +319,27 @@ def detect_foreground_blobs(
     compute_device: str = "cpu",
     strict_parity: bool = True,
     runtime_stats: dict | None = None,
+    context: DetectionContext | None = None,
 ) -> List[Detection]:
-    blur_kernel = int(cfg.get("blur_kernel", 5))
-    threshold_mode = str(cfg.get("threshold_mode", "fixed")).lower()
-    diff_threshold = int(cfg.get("diff_threshold", 25))
-    otsu_offset = int(cfg.get("otsu_offset", 0))
-    morph_open = int(cfg.get("morph_open", 3))
-    morph_close = int(cfg.get("morph_close", 5))
-    min_area = float(cfg.get("min_area", 10))
-    max_area = float(cfg.get("max_area", 5000))
-    max_global_intensity_shift = float(cfg.get("max_global_intensity_shift", -1))
-    max_foreground_ratio = float(cfg.get("max_foreground_ratio", -1))
-    max_detections_per_frame = int(cfg.get("max_detections_per_frame", 0))
-    roi_x_min = float(cfg.get("roi_x_min", -1))
-    roi_x_max = float(cfg.get("roi_x_max", -1))
-    roi_y_min = float(cfg.get("roi_y_min", -1))
-    roi_y_max = float(cfg.get("roi_y_max", -1))
+    ctx = context if context is not None else build_detection_context(background, cfg)
+    bg = ctx.background
+    blur_kernel = ctx.blur_kernel
+    threshold_mode = ctx.threshold_mode
+    diff_threshold = ctx.diff_threshold
+    otsu_offset = ctx.otsu_offset
+    morph_open = ctx.morph_open
+    morph_close = ctx.morph_close
 
     binary: np.ndarray
     frame_proc: np.ndarray
     bg_proc: np.ndarray
+    fg_count: int | None = None
 
     if compute_device == "cuda":
         try:
             binary_cuda = _binary_cuda(
                 frame_gray,
-                background,
+                bg,
                 blur_kernel=blur_kernel,
                 threshold_mode=threshold_mode,
                 diff_threshold=diff_threshold,
@@ -228,16 +349,7 @@ def detect_foreground_blobs(
             )
 
             if strict_parity:
-                binary_cpu, frame_proc, bg_proc = _binary_cpu(
-                    frame_gray,
-                    background,
-                    blur_kernel=blur_kernel,
-                    threshold_mode=threshold_mode,
-                    diff_threshold=diff_threshold,
-                    otsu_offset=otsu_offset,
-                    morph_open=morph_open,
-                    morph_close=morph_close,
-                )
+                binary_cpu, frame_proc, bg_proc, fg_count = _binary_cpu(frame_gray, ctx)
                 if runtime_stats is not None:
                     runtime_stats["cuda_parity_checked_frames"] = runtime_stats.get("cuda_parity_checked_frames", 0) + 1
                 if np.array_equal(binary_cpu, binary_cuda):
@@ -248,46 +360,23 @@ def detect_foreground_blobs(
                     binary = binary_cpu
             else:
                 binary = binary_cuda
-                frame_proc, bg_proc = _prepare_frame_and_background(frame_gray, background, blur_kernel)
+                frame_view = frame_gray[ctx.process_y0:ctx.process_y1, ctx.process_x0:ctx.process_x1]
+                frame_proc = _prepare_frame(frame_view, blur_kernel)
+                bg_proc = ctx.bg_proc_view
                 if runtime_stats is not None:
                     runtime_stats["cuda_frames_used"] = runtime_stats.get("cuda_frames_used", 0) + 1
         except Exception:
             if runtime_stats is not None:
                 runtime_stats["cuda_runtime_failures"] = runtime_stats.get("cuda_runtime_failures", 0) + 1
-            binary, frame_proc, bg_proc = _binary_cpu(
-                frame_gray,
-                background,
-                blur_kernel=blur_kernel,
-                threshold_mode=threshold_mode,
-                diff_threshold=diff_threshold,
-                otsu_offset=otsu_offset,
-                morph_open=morph_open,
-                morph_close=morph_close,
-            )
+            binary, frame_proc, bg_proc, fg_count = _binary_cpu(frame_gray, ctx)
     else:
-        binary, frame_proc, bg_proc = _binary_cpu(
-            frame_gray,
-            background,
-            blur_kernel=blur_kernel,
-            threshold_mode=threshold_mode,
-            diff_threshold=diff_threshold,
-            otsu_offset=otsu_offset,
-            morph_open=morph_open,
-            morph_close=morph_close,
-        )
+        binary, frame_proc, bg_proc, fg_count = _binary_cpu(frame_gray, ctx)
 
     return _extract_detections_from_binary(
         binary,
         frame_proc,
         bg_proc,
-        min_area=min_area,
-        max_area=max_area,
-        max_global_intensity_shift=max_global_intensity_shift,
-        max_foreground_ratio=max_foreground_ratio,
-        max_detections_per_frame=max_detections_per_frame,
-        roi_x_min=roi_x_min,
-        roi_x_max=roi_x_max,
-        roi_y_min=roi_y_min,
-        roi_y_max=roi_y_max,
+        ctx=ctx,
         valid_mask=valid_mask,
+        fg_count=fg_count,
     )
