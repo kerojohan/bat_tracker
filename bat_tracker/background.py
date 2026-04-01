@@ -6,6 +6,8 @@ import cv2
 import numpy as np
 
 from .video import VideoMeta
+from .video import frame_to_gray
+from .video import open_video_capture
 
 
 def _sample_indices(frame_count: int, sample_frames: int, uniform: bool) -> np.ndarray:
@@ -33,7 +35,7 @@ def compute_background_median(
     if indices.size == 0:
         raise RuntimeError("Video has zero frames")
 
-    cap = cv2.VideoCapture(str(video_path))
+    cap = open_video_capture(video_path)
     if not cap.isOpened():
         raise RuntimeError(f"Cannot open video for background: {video_path}")
 
@@ -44,10 +46,7 @@ def compute_background_median(
             ok, frame = cap.read()
             if not ok:
                 continue
-            if frame.ndim == 3:
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            else:
-                gray = frame
+            gray = frame_to_gray(frame)
             sampled.append(gray)
     finally:
         cap.release()

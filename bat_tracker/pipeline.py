@@ -9,6 +9,7 @@ from math import ceil
 from math import hypot
 from pathlib import Path
 from statistics import mean
+from time import perf_counter
 from typing import Dict, List
 
 import cv2
@@ -17,12 +18,20 @@ import numpy as np
 from .background import compute_background_median
 from .compute import build_execution_plan
 from .config import load_config
+from .detection import build_detection_context
 from .detection import detect_foreground_blobs
+from .perf import PerformanceCollector
 from .render import render_tracks_overlay
 from .tracker import GreedyTracker, TrackPoint
 from .valid_region import load_image as load_valid_region_image
 from .valid_region import run_valid_region
 from .video import iter_gray_frames, read_video_meta
+
+# Two OpenCV worker threads gave the best real pipeline wall time on the
+# validated CPU benchmark videos. Higher values improved some isolated kernels
+# but regressed end-to-end throughput due to contention and oversubscription.
+OPENCV_CPU_THREADS = 2
+cv2.setNumThreads(OPENCV_CPU_THREADS)
 
 
 CSV_COLUMNS = [
@@ -571,6 +580,7 @@ def _export_track_clips(
 
 
 def run_pipeline(input_video: str, output_dir: str, config_path: str | None = None) -> Dict:
+    pipeline_started = perf_counter()
     cfg = load_config(config_path)
     execution_plan = build_execution_plan(cfg)
     execution_cfg = cfg.get("execution", {})
@@ -593,6 +603,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     out_dir.mkdir(parents=True, exist_ok=True)
 
     meta = read_video_meta(input_video)
+    perf = PerformanceCollector(meta.frame_count)
     valid_region_cfg = cfg.get("valid_region", {})
     valid_region_enabled = bool(valid_region_cfg.get("enabled", False))
     export_track_clips_enabled = bool(cfg["output"].get("export_track_clips", False))
@@ -662,13 +673,15 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         video_id=meta.video_id,
     )
     burst_gate = TemporalBurstGate.from_detection_cfg(cfg["detection"])
+    detection_context = build_detection_context(background, cfg["detection"])
 
     all_points: List[TrackPoint] = []
     frame_processed = 0
     suppressed_burst_frames = 0
     progress.start_stage("frame_processing")
 
-    for frame_idx, gray in iter_gray_frames(input_video):
+    for frame_idx, gray in iter_gray_frames(input_video, perf=perf):
+        frame_started = perf_counter()
         dets = detect_foreground_blobs(
             gray,
             background,
@@ -677,13 +690,20 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             compute_device=execution_plan.selected_device,
             strict_parity=strict_parity,
             runtime_stats=detection_runtime_stats,
+            context=detection_context,
+            frame_idx=frame_idx,
+            perf=perf,
         )
         if burst_gate is not None and not burst_gate.should_keep(frame_idx, len(dets)):
             dets = []
             suppressed_burst_frames += 1
+        tracker_started = perf_counter()
         frame_points = tracker.step(frame_idx, dets)
+        perf.record("tracker", perf_counter() - tracker_started, frame_idx=frame_idx)
         all_points.extend(frame_points)
         frame_processed += 1
+        perf.mark_frame_processed(frame_idx)
+        perf.record("total_frame", perf_counter() - frame_started, frame_idx=frame_idx)
         if meta.frame_count > 0:
             frame_fraction = frame_processed / float(meta.frame_count)
             progress.update_stage_fraction(
@@ -695,8 +715,10 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     progress.complete_stage("frame_processing", detail=f"frames {frame_processed}")
 
     progress.start_stage("postprocess")
+    postprocess_started = perf_counter()
     filtered_points = _filter_track_points(all_points, cfg["tracking"], meta.fps, valid_mask=valid_mask)
     filtered_points, merges_applied = _auto_merge_track_points(filtered_points, cfg["tracking"])
+    perf.record("postprocess_stage", perf_counter() - postprocess_started, executions=1)
     progress.complete_stage("postprocess", detail="postprocess done")
 
     progress.start_stage("exports_core")
@@ -735,6 +757,10 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         )
         progress.complete_stage("track_clips", detail="track clips exported")
 
+    perf.finish()
+    perf_summary = perf.summary()
+    perf_summary["pipeline_total_wall_sec"] = max(0.0, perf_counter() - pipeline_started)
+
     meta_payload = {
         "video": {
             "input_path": str(Path(input_video).resolve()),
@@ -760,6 +786,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "strict_parity": strict_parity,
             "selection_reason": execution_plan.reason,
         },
+        "performance": perf_summary,
         "outputs": {
             "background_png": str(background_path.resolve()),
             "tracks_csv": str(tracks_csv_path.resolve()),
