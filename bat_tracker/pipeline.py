@@ -22,6 +22,7 @@ from .detection import build_detection_context
 from .detection import detect_foreground_blobs
 from .perf import PerformanceCollector
 from .render import render_tracks_overlay
+from .track_smoothing import smooth_track_points
 from .tracker import GreedyTracker, TrackPoint
 from .valid_region import load_image as load_valid_region_image
 from .valid_region import run_valid_region
@@ -725,20 +726,63 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     tracks_csv_path = out_dir / "tracks.csv"
     _write_tracks_csv(tracks_csv_path, filtered_points)
 
-    events_csv_path = out_dir / "events.csv"
-    _write_events_csv(events_csv_path, filtered_points, valid_mask)
+    out_cfg_export = cfg.get("output", {})
+    smoothing_on = bool(out_cfg_export.get("trajectory_smoothing_enabled", False))
+    ts_window = int(out_cfg_export.get("trajectory_smoothing_window", 5))
+    smoothed_points: List[TrackPoint] | None = None
+    if smoothing_on:
+        smoothed_points = smooth_track_points(filtered_points, ts_window)
 
-    overlay = render_tracks_overlay(
-        background_gray=background,
-        points=filtered_points,
-        line_thickness=int(cfg["output"]["overlay_line_thickness"]),
-        start_radius=int(cfg["output"]["overlay_start_radius"]),
-        alpha=float(cfg["output"].get("overlay_alpha", 1.0)),
-        draw_track_labels=bool(cfg["output"].get("overlay_draw_track_labels", False)),
-        draw_track_labels_at_end=bool(cfg["output"].get("overlay_draw_track_labels_at_end", False)),
-        label_font_scale=float(cfg["output"].get("overlay_label_font_scale", 0.5)),
-        label_thickness=int(cfg["output"].get("overlay_label_thickness", 1)),
-    )
+    events_csv_path = out_dir / "events.csv"
+    points_for_events = smoothed_points if smoothed_points is not None else filtered_points
+    _write_events_csv(events_csv_path, points_for_events, valid_mask)
+
+    overlay_line_t = int(cfg["output"]["overlay_line_thickness"])
+    overlay_start_r = int(cfg["output"]["overlay_start_radius"])
+    overlay_alpha_v = float(cfg["output"].get("overlay_alpha", 1.0))
+    overlay_lbl = bool(cfg["output"].get("overlay_draw_track_labels", False))
+    overlay_lbl_end = bool(cfg["output"].get("overlay_draw_track_labels_at_end", False))
+    overlay_lbl_scale = float(cfg["output"].get("overlay_label_font_scale", 0.5))
+    overlay_lbl_th = int(cfg["output"].get("overlay_label_thickness", 1))
+
+    if smoothed_points is not None:
+        overlay_raw = render_tracks_overlay(
+            background_gray=background,
+            points=filtered_points,
+            line_thickness=overlay_line_t,
+            start_radius=overlay_start_r,
+            alpha=overlay_alpha_v,
+            draw_track_labels=overlay_lbl,
+            draw_track_labels_at_end=overlay_lbl_end,
+            label_font_scale=overlay_lbl_scale,
+            label_thickness=overlay_lbl_th,
+        )
+        cv2.imwrite(str(out_dir / "tracks_overlay_raw.png"), overlay_raw)
+        overlay_smoothed = render_tracks_overlay(
+            background_gray=background,
+            points=smoothed_points,
+            line_thickness=overlay_line_t,
+            start_radius=overlay_start_r,
+            alpha=overlay_alpha_v,
+            draw_track_labels=overlay_lbl,
+            draw_track_labels_at_end=overlay_lbl_end,
+            label_font_scale=overlay_lbl_scale,
+            label_thickness=overlay_lbl_th,
+        )
+        cv2.imwrite(str(out_dir / "tracks_overlay_smoothed.png"), overlay_smoothed)
+        overlay = overlay_raw
+    else:
+        overlay = render_tracks_overlay(
+            background_gray=background,
+            points=filtered_points,
+            line_thickness=overlay_line_t,
+            start_radius=overlay_start_r,
+            alpha=overlay_alpha_v,
+            draw_track_labels=overlay_lbl,
+            draw_track_labels_at_end=overlay_lbl_end,
+            label_font_scale=overlay_lbl_scale,
+            label_thickness=overlay_lbl_th,
+        )
     overlay_path = out_dir / "tracks_overlay.png"
     cv2.imwrite(str(overlay_path), overlay)
     progress.complete_stage("exports_core", detail="csv and overlay exported")
@@ -761,7 +805,19 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     perf_summary = perf.summary()
     perf_summary["pipeline_total_wall_sec"] = max(0.0, perf_counter() - pipeline_started)
 
+    trajectory_smoothing_meta = {
+        "enabled": smoothing_on,
+        "window": ts_window,
+    }
+    overlay_smoothing_paths: Dict[str, str] = {}
+    if smoothed_points is not None:
+        overlay_smoothing_paths = {
+            "tracks_overlay_raw_png": str((out_dir / "tracks_overlay_raw.png").resolve()),
+            "tracks_overlay_smoothed_png": str((out_dir / "tracks_overlay_smoothed.png").resolve()),
+        }
+
     meta_payload = {
+        "trajectory_smoothing": trajectory_smoothing_meta,
         "video": {
             "input_path": str(Path(input_video).resolve()),
             "video_id": meta.video_id,
@@ -792,6 +848,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "tracks_csv": str(tracks_csv_path.resolve()),
             "events_csv": str(events_csv_path.resolve()),
             "tracks_overlay_png": str(overlay_path.resolve()),
+            **overlay_smoothing_paths,
             "track_clips": track_clip_outputs,
             **valid_region_outputs,
         },

@@ -94,6 +94,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "export_track_clips": False,
         "track_clips_subdir": "track_clips",
         "track_clips_padding_frames": 0,
+        "trajectory_smoothing_enabled": False,
+        "trajectory_smoothing_window": 5,
     },
 }
 
@@ -140,6 +142,11 @@ def _validate_config(cfg: Dict[str, Any]) -> None:
     output = cfg.get("output", {})
     if not isinstance(output, dict):
         raise ValueError("output config must be a mapping/dictionary")
+    ts_win = int(output.get("trajectory_smoothing_window", 5))
+    if ts_win < 3 or ts_win % 2 == 0:
+        raise ValueError(
+            f"output.trajectory_smoothing_window must be an odd integer >= 3, got: {ts_win}"
+        )
     progress_step_percent = int(output.get("progress_step_percent", 5))
     if progress_step_percent < 1 or progress_step_percent > 100:
         raise ValueError(
