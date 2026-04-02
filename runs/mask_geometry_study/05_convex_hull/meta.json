@@ -1,0 +1,285 @@
+{
+  "video": {
+    "input_path": "/home/jcaparros/BORRAR/retallat.mp4",
+    "video_id": "retallat",
+    "fps": 30.0,
+    "frame_count_reported": 9000,
+    "width": 1728,
+    "height": 1296
+  },
+  "parameters": {
+    "execution": {
+      "device": "auto",
+      "strict_parity": true
+    },
+    "background": {
+      "sample_frames": 120,
+      "uniform_sampling": true
+    },
+    "detection": {
+      "blur_kernel": 9,
+      "threshold_mode": "fixed",
+      "diff_threshold": 10,
+      "otsu_offset": 0,
+      "morph_open": 3,
+      "morph_close": 3,
+      "min_area": 6,
+      "max_area": 50000,
+      "max_global_intensity_shift": -1.0,
+      "max_foreground_ratio": 0.04,
+      "max_detections_per_frame": 80,
+      "roi_x_min": -1.0,
+      "roi_x_max": -1.0,
+      "roi_y_min": -1.0,
+      "roi_y_max": 780.0,
+      "temporal_burst_min_detections": 16,
+      "temporal_burst_window_frames": 10,
+      "temporal_burst_trigger_frames": 3,
+      "temporal_burst_cooldown_frames": 24
+    },
+    "tracking": {
+      "max_distance": 120.0,
+      "max_missed": 12,
+      "min_track_length": 4,
+      "min_track_duration_sec": 0.08,
+      "min_track_displacement": 15.0,
+      "min_track_path_length": 20.0,
+      "min_track_straightness": 0.06,
+      "require_start_or_end_in_valid_region": true,
+      "valid_region_gate_dilate_px": 45,
+      "auto_merge_suggested": true,
+      "merge_max_gap_frames": 8,
+      "merge_max_endpoint_distance": 80.0,
+      "merge_overlap_min_common_frames": 3,
+      "merge_overlap_max_mean_distance": 60.0,
+      "merge_overlap_min_direction_cosine": 0.8
+    },
+    "valid_region": {
+      "enabled": true,
+      "method": "hybrid_deep_layer_profile",
+      "apply_to_detection": false,
+      "hybrid_combine_mode": "and",
+      "input_image": "",
+      "blur_kernel_size": 151,
+      "profile_smooth_window": 31,
+      "threshold_ratio": 0.45,
+      "safety_margin": 10,
+      "min_region_width_ratio": 0.35,
+      "depth_percentile": 85.0,
+      "depth_morph_kernel": 9,
+      "depth_min_area_ratio": 0.02,
+      "depth_layer_percentiles": [
+        82,
+        78,
+        72,
+        66
+      ],
+      "depth_layer_dilate_px": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "bottom_contour_snap_enabled": true,
+      "bottom_contour_search_up_px": 20,
+      "bottom_contour_search_down_px": 110,
+      "bottom_contour_smooth_window": 35,
+      "bottom_contour_gradient_quantile": 52.0,
+      "bottom_contour_regularization": 1.25,
+      "bottom_contour_max_step_px": 8,
+      "bottom_contour_downward_bias": 0.2,
+      "bottom_contour_regularization_mix": 0.9,
+      "bottom_contour_deepest_strong_ratio": 0.62,
+      "output_subdir": "valid_region",
+      "mask_geometry": {
+        "mode": "convex_hull",
+        "clip_to_profile_mask": true
+      }
+    },
+    "events": {
+      "direction_mode": "outward_crossing"
+    },
+    "output": {
+      "overlay_line_thickness": 2,
+      "overlay_start_radius": 5,
+      "overlay_alpha": 1.0,
+      "overlay_draw_track_labels": true,
+      "overlay_draw_track_labels_at_end": true,
+      "overlay_label_font_scale": 0.5,
+      "overlay_label_thickness": 1,
+      "progress_enabled": true,
+      "progress_step_percent": 5,
+      "export_track_clips": false,
+      "track_clips_subdir": "track_clips",
+      "track_clips_padding_frames": 0,
+      "event_analysis_enabled": false,
+      "event_analysis_fragmentation_gap": 6
+    },
+    "diagnostics": {
+      "enabled": false,
+      "frame_metrics_csv": "diagnostics_frame_metrics.csv",
+      "track_filter_csv": "diagnostics_track_filter.csv",
+      "intermediate_subdir": "diagnostics_intermediate",
+      "save_binary_stride": 0,
+      "sample_miss_stride": 0,
+      "miss_diff_threshold": 18
+    }
+  },
+  "valid_region": {
+    "enabled": true,
+    "x_start": 378,
+    "x_end": 784,
+    "width": 407,
+    "method": "hybrid_deep_layer_profile",
+    "hybrid_combine_mode": "and",
+    "mask_geometry_mode": "convex_hull",
+    "output_dir": "/home/jcaparros/BORRAR/bat_tracker/runs/mask_geometry_study/05_convex_hull/valid_region"
+  },
+  "metrics": {
+    "frames_processed": 9000,
+    "detections_kept": 97,
+    "tracks_total": 8,
+    "track_length_min": 5,
+    "track_length_max": 24,
+    "track_length_mean": 12.125,
+    "frames_suppressed_temporal_burst": 0,
+    "tracks_merged_auto": 1,
+    "background_gpu_used": 0,
+    "background_gpu_unavailable": 0,
+    "background_gpu_failures": 0,
+    "background_gpu_parity_checked": 0,
+    "background_gpu_parity_mismatch": 0,
+    "cuda_frames_used": 0,
+    "cuda_runtime_failures": 0,
+    "cuda_parity_checked_frames": 0,
+    "cuda_parity_mismatch_frames": 0
+  },
+  "execution": {
+    "requested_device": "auto",
+    "selected_device": "cpu",
+    "gpu_available": false,
+    "strict_parity": true,
+    "selection_reason": "auto_cpu:no_cuda_device"
+  },
+  "performance": {
+    "pipeline_total_sec": 55.78281796200008,
+    "frames_processed": 9000,
+    "fps_effective": 161.34000268919556,
+    "phases": {
+      "background_absdiff": {
+        "total_sec": 2.7214325679187823,
+        "percent_total": 4.878621531405342,
+        "mean_sec_per_frame": 0.00030238139643542025,
+        "median_sec_per_frame": 0.0002793849998852238,
+        "p95_sec_per_frame": 0.0004468409503260771,
+        "executions": 9000
+      },
+      "cvt_color": {
+        "total_sec": 14.232706123089883,
+        "percent_total": 25.514498268598356,
+        "mean_sec_per_frame": 0.0015814117914544315,
+        "median_sec_per_frame": 0.0017853740000646212,
+        "p95_sec_per_frame": 0.002039246550111784,
+        "executions": 9000
+      },
+      "find_contours": {
+        "total_sec": 0.9844116920239685,
+        "percent_total": 1.7647220559824737,
+        "mean_sec_per_frame": 0.00010937907689155206,
+        "median_sec_per_frame": 0.0,
+        "p95_sec_per_frame": 0.0004650277002383518,
+        "executions": 2358
+      },
+      "gaussian_blur": {
+        "total_sec": 22.038490853967232,
+        "percent_total": 39.50766859605428,
+        "mean_sec_per_frame": 0.0024487212059963594,
+        "median_sec_per_frame": 0.002148641000076168,
+        "p95_sec_per_frame": 0.005240217699702043,
+        "executions": 9000
+      },
+      "morphology": {
+        "total_sec": 8.13286274006532,
+        "percent_total": 14.57951218169997,
+        "mean_sec_per_frame": 0.0009036514155628133,
+        "median_sec_per_frame": 0.0008923934997255856,
+        "p95_sec_per_frame": 0.0014861954489788327,
+        "executions": 16548
+      },
+      "postprocess_stage": {
+        "total_sec": 0.2131764280002244,
+        "percent_total": 0.3821542829647701,
+        "mean_sec_per_frame": 0.0,
+        "median_sec_per_frame": 0.0,
+        "p95_sec_per_frame": 0.0,
+        "executions": 1
+      },
+      "prefetch_queue_wait": {
+        "total_sec": 0.10929036496418121,
+        "percent_total": 0.1959211975247129,
+        "mean_sec_per_frame": 1.2143373884909022e-05,
+        "median_sec_per_frame": 8.749500011617783e-06,
+        "p95_sec_per_frame": 1.7358050172333606e-05,
+        "executions": 9000
+      },
+      "threshold": {
+        "total_sec": 0.8922638540170738,
+        "percent_total": 1.5995316956287409,
+        "mean_sec_per_frame": 9.914042822411931e-05,
+        "median_sec_per_frame": 8.875250023265835e-05,
+        "p95_sec_per_frame": 0.00016079904980870194,
+        "executions": 9000
+      },
+      "total_frame": {
+        "total_sec": 36.57204281999657,
+        "percent_total": 65.5614831880847,
+        "mean_sec_per_frame": 0.004063560313332952,
+        "median_sec_per_frame": 0.003737316999831819,
+        "p95_sec_per_frame": 0.007524595600125392,
+        "executions": 9000
+      },
+      "tracker": {
+        "total_sec": 0.11888289098351379,
+        "percent_total": 0.21311739945532732,
+        "mean_sec_per_frame": 1.320921010927931e-05,
+        "median_sec_per_frame": 1.15550001282827e-05,
+        "p95_sec_per_frame": 2.425075003884557e-05,
+        "executions": 9000
+      },
+      "video_read": {
+        "total_sec": 16.7742764570321,
+        "percent_total": 30.070686763187435,
+        "mean_sec_per_frame": 0.001863808495225789,
+        "median_sec_per_frame": 0.0017366505003337807,
+        "p95_sec_per_frame": 0.002878742750181118,
+        "executions": 9000
+      }
+    },
+    "pipeline_total_wall_sec": 55.8278327500002
+  },
+  "event_analysis": {},
+  "outputs": {
+    "background_png": "/home/jcaparros/BORRAR/bat_tracker/runs/mask_geometry_study/05_convex_hull/background.png",
+    "tracks_csv": "/home/jcaparros/BORRAR/bat_tracker/runs/mask_geometry_study/05_convex_hull/tracks.csv",
+    "events_csv": "/home/jcaparros/BORRAR/bat_tracker/runs/mask_geometry_study/05_convex_hull/events.csv",
+    "tracks_overlay_png": "/home/jcaparros/BORRAR/bat_tracker/runs/mask_geometry_study/05_convex_hull/tracks_overlay.png",
+    "track_clips": {},
+    "valid_region_mask_png": "/home/jcaparros/BORRAR/bat_tracker/runs/mask_geometry_study/05_convex_hull/valid_region/mask.png",
+    "valid_region_overlay_png": "/home/jcaparros/BORRAR/bat_tracker/runs/mask_geometry_study/05_convex_hull/valid_region/overlay.png",
+    "valid_region_profile_png": "/home/jcaparros/BORRAR/bat_tracker/runs/mask_geometry_study/05_convex_hull/valid_region/profile.png"
+  },
+  "postprocess": {
+    "auto_merge_enabled": true,
+    "auto_merges_applied": [
+      {
+        "track_a": 195,
+        "track_b": 210,
+        "merged_to": 195,
+        "reason": "overlap",
+        "common_frames": 4,
+        "mean_distance": 33.08429840024129,
+        "mean_direction_cosine": 0.8879833904885481
+      }
+    ]
+  }
+}

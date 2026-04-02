@@ -1,0 +1,414 @@
+{
+  "scene_autotune": {
+    "enabled": true,
+    "profile_dir": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03_refout3/smoothed/scene_profile",
+    "scene_profile_json": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03_refout3/smoothed/scene_profile/scene_profile.json",
+    "autotune_decisions_json": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03_refout3/smoothed/scene_profile/autotune_decisions.json",
+    "write_profile": true,
+    "use_recommended_values": true,
+    "overrides_allowed": true,
+    "recommended": {
+      "valid_region.mask_geometry.mode": "dilate",
+      "valid_region.mask_geometry.dilate_px": 31,
+      "valid_region.mask_geometry.iterations": 1,
+      "valid_region.mask_geometry.clip_to_profile_mask": true,
+      "detection.diff_threshold": 17,
+      "detection.min_area": 10,
+      "tracking.max_missed": 12,
+      "tracking.max_distance": 114.0
+    },
+    "apply_report": {
+      "applied": {
+        "valid_region.mask_geometry.mode": {
+          "value": "dilate",
+          "source": "scene_auto_tune"
+        },
+        "valid_region.mask_geometry.dilate_px": {
+          "value": 31,
+          "source": "scene_auto_tune"
+        },
+        "valid_region.mask_geometry.iterations": {
+          "value": 1,
+          "source": "scene_auto_tune"
+        },
+        "valid_region.mask_geometry.clip_to_profile_mask": {
+          "value": true,
+          "source": "scene_auto_tune"
+        },
+        "detection.diff_threshold": {
+          "value": 17,
+          "source": "scene_auto_tune_override_explicit"
+        },
+        "detection.min_area": {
+          "value": 10,
+          "source": "scene_auto_tune_override_explicit"
+        },
+        "tracking.max_missed": {
+          "value": 12,
+          "source": "scene_auto_tune_override_explicit"
+        },
+        "tracking.max_distance": {
+          "value": 114.0,
+          "source": "scene_auto_tune_override_explicit"
+        }
+      },
+      "skipped_explicit": {},
+      "allow_override_explicit": true
+    },
+    "final_parameter_sources": {
+      "valid_region.mask_geometry.mode": {
+        "value": "dilate",
+        "source": "scene_auto_tune"
+      },
+      "valid_region.mask_geometry.dilate_px": {
+        "value": 31,
+        "source": "scene_auto_tune"
+      },
+      "valid_region.mask_geometry.iterations": {
+        "value": 1,
+        "source": "scene_auto_tune"
+      },
+      "valid_region.mask_geometry.clip_to_profile_mask": {
+        "value": true,
+        "source": "scene_auto_tune"
+      },
+      "detection.diff_threshold": {
+        "value": 17,
+        "source": "scene_auto_tune_override_explicit"
+      },
+      "detection.min_area": {
+        "value": 10,
+        "source": "scene_auto_tune_override_explicit"
+      },
+      "tracking.max_missed": {
+        "value": 12,
+        "source": "scene_auto_tune_override_explicit"
+      },
+      "tracking.max_distance": {
+        "value": 114.0,
+        "source": "scene_auto_tune_override_explicit"
+      }
+    },
+    "snapshot_before_apply": {
+      "valid_region.mask_geometry.mode": null,
+      "valid_region.mask_geometry.dilate_px": null,
+      "valid_region.mask_geometry.iterations": null,
+      "valid_region.mask_geometry.clip_to_profile_mask": null,
+      "detection.diff_threshold": 12,
+      "detection.min_area": 8,
+      "tracking.max_missed": 10,
+      "tracking.max_distance": 120.0
+    },
+    "rules_version": "1.0"
+  },
+  "trajectory_smoothing": {
+    "enabled": true,
+    "window": 5
+  },
+  "video": {
+    "input_path": "/home/jcaparros/BORRAR/rabella_20211016_DSCF0005.mp4",
+    "video_id": "rabella_20211016_DSCF0005",
+    "fps": 25.0,
+    "frame_count_reported": 1502,
+    "width": 1024,
+    "height": 576
+  },
+  "parameters": {
+    "execution": {
+      "device": "auto",
+      "strict_parity": true
+    },
+    "background": {
+      "sample_frames": 120,
+      "uniform_sampling": true
+    },
+    "detection": {
+      "blur_kernel": 9,
+      "threshold_mode": "fixed",
+      "diff_threshold": 17,
+      "otsu_offset": 0,
+      "morph_open": 3,
+      "morph_close": 3,
+      "min_area": 10,
+      "max_area": 50000,
+      "max_global_intensity_shift": -1.0,
+      "max_foreground_ratio": 0.04,
+      "max_detections_per_frame": 80,
+      "roi_x_min": -1.0,
+      "roi_x_max": -1.0,
+      "roi_y_min": -1.0,
+      "roi_y_max": 780.0,
+      "temporal_burst_min_detections": 16,
+      "temporal_burst_window_frames": 10,
+      "temporal_burst_trigger_frames": 3,
+      "temporal_burst_cooldown_frames": 24
+    },
+    "tracking": {
+      "max_distance": 114.0,
+      "max_missed": 12,
+      "min_track_length": 6,
+      "min_track_duration_sec": 0.1,
+      "min_track_displacement": 20.0,
+      "min_track_path_length": 28.0,
+      "min_track_straightness": 0.08,
+      "require_start_or_end_in_valid_region": true,
+      "valid_region_gate_dilate_px": 24,
+      "auto_merge_suggested": true,
+      "merge_max_gap_frames": 6,
+      "merge_max_endpoint_distance": 60.0,
+      "merge_overlap_min_common_frames": 3,
+      "merge_overlap_max_mean_distance": 60.0,
+      "merge_overlap_min_direction_cosine": 0.8
+    },
+    "valid_region": {
+      "enabled": true,
+      "method": "hybrid_deep_layer_profile",
+      "apply_to_detection": false,
+      "hybrid_combine_mode": "and",
+      "input_image": "",
+      "blur_kernel_size": 151,
+      "profile_smooth_window": 31,
+      "threshold_ratio": 0.45,
+      "safety_margin": 10,
+      "min_region_width_ratio": 0.35,
+      "depth_percentile": 85.0,
+      "depth_morph_kernel": 9,
+      "depth_min_area_ratio": 0.02,
+      "depth_layer_percentiles": [
+        82,
+        78,
+        72,
+        66
+      ],
+      "depth_layer_dilate_px": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "bottom_contour_snap_enabled": true,
+      "bottom_contour_search_up_px": 20,
+      "bottom_contour_search_down_px": 110,
+      "bottom_contour_smooth_window": 35,
+      "bottom_contour_gradient_quantile": 52.0,
+      "bottom_contour_regularization": 1.25,
+      "bottom_contour_max_step_px": 8,
+      "bottom_contour_downward_bias": 0.2,
+      "bottom_contour_regularization_mix": 0.9,
+      "bottom_contour_deepest_strong_ratio": 0.62,
+      "output_subdir": "valid_region",
+      "mask_geometry": {
+        "mode": "dilate",
+        "dilate_px": 31,
+        "iterations": 1,
+        "clip_to_profile_mask": true
+      }
+    },
+    "events": {
+      "direction_mode": "endpoint"
+    },
+    "output": {
+      "overlay_line_thickness": 2,
+      "overlay_start_radius": 5,
+      "overlay_alpha": 1.0,
+      "overlay_draw_track_labels": true,
+      "overlay_draw_track_labels_at_end": true,
+      "overlay_label_font_scale": 0.5,
+      "overlay_label_thickness": 1,
+      "progress_enabled": true,
+      "progress_step_percent": 5,
+      "export_track_clips": false,
+      "track_clips_subdir": "track_clips",
+      "track_clips_padding_frames": 5,
+      "event_analysis_enabled": false,
+      "event_analysis_fragmentation_gap": 6,
+      "trajectory_smoothing_enabled": true,
+      "trajectory_smoothing_window": 5
+    },
+    "diagnostics": {
+      "enabled": false,
+      "frame_metrics_csv": "diagnostics_frame_metrics.csv",
+      "track_filter_csv": "diagnostics_track_filter.csv",
+      "intermediate_subdir": "diagnostics_intermediate",
+      "save_binary_stride": 0,
+      "sample_miss_stride": 0,
+      "miss_diff_threshold": 18
+    },
+    "scene_auto_tune": {
+      "enabled": true,
+      "write_profile": true,
+      "use_recommended_values": true,
+      "overrides_allowed": true,
+      "profile_subdir": "scene_profile",
+      "sample_frames": 48
+    }
+  },
+  "valid_region": {
+    "enabled": true,
+    "x_start": 24,
+    "x_end": 507,
+    "width": 484,
+    "method": "hybrid_deep_layer_profile",
+    "hybrid_combine_mode": "and",
+    "mask_geometry_mode": "dilate",
+    "output_dir": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03_refout3/smoothed/valid_region"
+  },
+  "metrics": {
+    "frames_processed": 1502,
+    "detections_kept": 185,
+    "tracks_total": 16,
+    "track_length_min": 7,
+    "track_length_max": 18,
+    "track_length_mean": 11.5625,
+    "frames_suppressed_temporal_burst": 0,
+    "tracks_merged_auto": 2,
+    "background_gpu_used": 0,
+    "background_gpu_unavailable": 0,
+    "background_gpu_failures": 0,
+    "background_gpu_parity_checked": 0,
+    "background_gpu_parity_mismatch": 0,
+    "cuda_frames_used": 0,
+    "cuda_runtime_failures": 0,
+    "cuda_parity_checked_frames": 0,
+    "cuda_parity_mismatch_frames": 0
+  },
+  "execution": {
+    "requested_device": "auto",
+    "selected_device": "cpu",
+    "gpu_available": false,
+    "strict_parity": true,
+    "selection_reason": "auto_cpu:no_cuda_device"
+  },
+  "performance": {
+    "pipeline_total_sec": 9.780406464000407,
+    "frames_processed": 1502,
+    "fps_effective": 153.57234952642736,
+    "phases": {
+      "background_absdiff": {
+        "total_sec": 0.13156029898709676,
+        "percent_total": 1.3451414260883963,
+        "mean_sec_per_frame": 8.75900792191057e-05,
+        "median_sec_per_frame": 8.140549925883533e-05,
+        "p95_sec_per_frame": 0.0001520394004728587,
+        "executions": 1502
+      },
+      "cvt_color": {
+        "total_sec": 0.3952058059967385,
+        "percent_total": 4.04079122326262,
+        "mean_sec_per_frame": 0.0002631197110497593,
+        "median_sec_per_frame": 0.00022958700083108852,
+        "p95_sec_per_frame": 0.0003739622497960227,
+        "executions": 1502
+      },
+      "find_contours": {
+        "total_sec": 0.07003744698522496,
+        "percent_total": 0.7160995531527027,
+        "mean_sec_per_frame": 4.6629458711867485e-05,
+        "median_sec_per_frame": 0.0,
+        "p95_sec_per_frame": 0.00016700059877621244,
+        "executions": 605
+      },
+      "gaussian_blur": {
+        "total_sec": 1.2598653530221782,
+        "percent_total": 12.881523458758837,
+        "mean_sec_per_frame": 0.0008387918462198256,
+        "median_sec_per_frame": 0.00061072350035829,
+        "p95_sec_per_frame": 0.001468038049461029,
+        "executions": 1502
+      },
+      "morphology": {
+        "total_sec": 0.2525961629944504,
+        "percent_total": 2.582675514808133,
+        "mean_sec_per_frame": 0.00016817321104823597,
+        "median_sec_per_frame": 0.00017998800012719585,
+        "p95_sec_per_frame": 0.00045446000131050824,
+        "executions": 1630
+      },
+      "postprocess_stage": {
+        "total_sec": 0.01532606900036626,
+        "percent_total": 0.15670175934689684,
+        "mean_sec_per_frame": 0.0,
+        "median_sec_per_frame": 0.0,
+        "p95_sec_per_frame": 0.0,
+        "executions": 1
+      },
+      "prefetch_queue_wait": {
+        "total_sec": 0.0681713379744906,
+        "percent_total": 0.6970194769043063,
+        "mean_sec_per_frame": 4.53870425928699e-05,
+        "median_sec_per_frame": 4.611500116880052e-06,
+        "p95_sec_per_frame": 1.2082999910489891e-05,
+        "executions": 1502
+      },
+      "threshold": {
+        "total_sec": 0.05118201701588987,
+        "percent_total": 0.5233117580979888,
+        "mean_sec_per_frame": 3.4075910130419354e-05,
+        "median_sec_per_frame": 3.0295000215119217e-05,
+        "p95_sec_per_frame": 5.309189882609644e-05,
+        "executions": 1502
+      },
+      "total_frame": {
+        "total_sec": 1.8933167359755316,
+        "percent_total": 19.35826228638275,
+        "mean_sec_per_frame": 0.0012605304500502873,
+        "median_sec_per_frame": 0.000998363500002597,
+        "p95_sec_per_frame": 0.002376327349247731,
+        "executions": 1502
+      },
+      "tracker": {
+        "total_sec": 0.018191283923442825,
+        "percent_total": 0.18599721791114782,
+        "mean_sec_per_frame": 1.2111374116806141e-05,
+        "median_sec_per_frame": 9.146499905909877e-06,
+        "p95_sec_per_frame": 2.976279993163189e-05,
+        "executions": 1502
+      },
+      "video_read": {
+        "total_sec": 1.294740837001882,
+        "percent_total": 13.2381086795068,
+        "mean_sec_per_frame": 0.0008620112097216259,
+        "median_sec_per_frame": 0.0005035314989072504,
+        "p95_sec_per_frame": 0.002726547199927154,
+        "executions": 1502
+      }
+    },
+    "pipeline_total_wall_sec": 9.798766978999993
+  },
+  "event_analysis": {},
+  "outputs": {
+    "background_png": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03_refout3/smoothed/background.png",
+    "tracks_csv": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03_refout3/smoothed/tracks.csv",
+    "events_csv": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03_refout3/smoothed/events.csv",
+    "tracks_overlay_png": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03_refout3/smoothed/tracks_overlay.png",
+    "tracks_overlay_raw_png": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03_refout3/smoothed/tracks_overlay_raw.png",
+    "tracks_overlay_smoothed_png": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03_refout3/smoothed/tracks_overlay_smoothed.png",
+    "track_clips": {},
+    "valid_region_mask_png": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03_refout3/smoothed/valid_region/mask.png",
+    "valid_region_overlay_png": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03_refout3/smoothed/valid_region/overlay.png",
+    "valid_region_profile_png": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03_refout3/smoothed/valid_region/profile.png"
+  },
+  "postprocess": {
+    "auto_merge_enabled": true,
+    "auto_merges_applied": [
+      {
+        "track_a": 25,
+        "track_b": 27,
+        "merged_to": 25,
+        "reason": "overlap",
+        "common_frames": 5,
+        "mean_distance": 31.340436423566416,
+        "mean_direction_cosine": 0.8880556538588686
+      },
+      {
+        "track_a": 71,
+        "track_b": 74,
+        "merged_to": 71,
+        "reason": "overlap",
+        "common_frames": 6,
+        "mean_distance": 32.67235536030976,
+        "mean_direction_cosine": 0.9595987228735134
+      }
+    ]
+  }
+}

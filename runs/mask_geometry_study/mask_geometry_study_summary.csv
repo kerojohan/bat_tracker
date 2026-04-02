@@ -1,0 +1,7 @@
+experiment,mask_geometry_config,mask_geometry_mode_meta,ok,exits,events_total,track_6_direction,track_6_present,track_232_direction,track_232_present,overlay_png
+01_baseline,baseline (sense mask_geometry),baseline,True,2,8,outside,True,outside,True,/home/jcaparros/BORRAR/bat_tracker/runs/mask_geometry_study/01_baseline/tracks_overlay.png
+02_dilate_px28,"{""clip_to_profile_mask"": true, ""dilate_px"": 28, ""mode"": ""dilate""}",dilate,True,4,12,exits,True,exits,True,/home/jcaparros/BORRAR/bat_tracker/runs/mask_geometry_study/02_dilate_px28/tracks_overlay.png
+03_dilate_px55,"{""clip_to_profile_mask"": true, ""dilate_px"": 55, ""mode"": ""dilate""}",dilate,True,5,13,exits,True,inside,True,/home/jcaparros/BORRAR/bat_tracker/runs/mask_geometry_study/03_dilate_px55/tracks_overlay.png
+04_dilate_px85,"{""clip_to_profile_mask"": true, ""dilate_px"": 85, ""mode"": ""dilate""}",dilate,True,5,14,exits,True,inside,True,/home/jcaparros/BORRAR/bat_tracker/runs/mask_geometry_study/04_dilate_px85/tracks_overlay.png
+05_convex_hull,"{""clip_to_profile_mask"": true, ""mode"": ""convex_hull""}",convex_hull,True,2,8,outside,True,outside,True,/home/jcaparros/BORRAR/bat_tracker/runs/mask_geometry_study/05_convex_hull/tracks_overlay.png
+06_gradient_band,"{""band_close_px"": 21, ""band_dilate_px"": 10, ""clip_to_profile_mask"": true, ""gradient_percentile"": 86.0, ""mode"": ""gradient_band_union""}",gradient_band_union,True,2,23,inside,True,inside,True,/home/jcaparros/BORRAR/bat_tracker/runs/mask_geometry_study/06_gradient_band/tracks_overlay.png

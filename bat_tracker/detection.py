@@ -170,6 +170,7 @@ def _binary_cpu(
     ctx: DetectionContext,
     perf: PerformanceCollector | None = None,
     frame_idx: int | None = None,
+    diag: dict | None = None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, int]:
     blur_kernel = ctx.blur_kernel
     threshold_mode = ctx.threshold_mode
@@ -198,18 +199,31 @@ def _binary_cpu(
     if perf is not None:
         perf.record("background_absdiff", perf_counter() - absdiff_started, frame_idx=frame_idx)
 
+    if diag is not None:
+        diag["mean_absdiff_roi"] = float(np.mean(diff))
+        diag["max_absdiff_roi"] = float(np.max(diff))
+
     threshold_started = perf_counter()
     if threshold_mode == "otsu":
         otsu_thr, _ = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         thr = max(1, min(255, int(otsu_thr + otsu_offset)))
+        if diag is not None:
+            diag["otsu_threshold_raw"] = float(otsu_thr)
+            diag["threshold_applied"] = float(thr)
         _, binary = cv2.threshold(diff, thr, 255, cv2.THRESH_BINARY)
     else:
+        if diag is not None:
+            diag["threshold_applied"] = float(diff_threshold)
         _, binary = cv2.threshold(diff, diff_threshold, 255, cv2.THRESH_BINARY, dst=ctx.diff_buf)
     if perf is not None:
         perf.record("threshold", perf_counter() - threshold_started, frame_idx=frame_idx)
 
     fg_count = int(cv2.countNonZero(binary))
+    if diag is not None:
+        diag["fg_pixels_after_threshold"] = int(fg_count)
     if fg_count == 0:
+        if diag is not None:
+            diag["fg_pixels_after_morph"] = 0
         return binary, frame_proc, bg_proc, 0
 
     morph_total = 0.0
@@ -229,6 +243,8 @@ def _binary_cpu(
         perf.record("morphology", morph_total, frame_idx=frame_idx, executions=morph_exec)
 
     fg_count = int(cv2.countNonZero(binary))
+    if diag is not None:
+        diag["fg_pixels_after_morph"] = int(fg_count)
     return binary, frame_proc, bg_proc, fg_count
 
 
@@ -287,6 +303,7 @@ def _extract_detections_from_binary(
     fg_count: int | None = None,
     perf: PerformanceCollector | None = None,
     frame_idx: int | None = None,
+    diag: dict | None = None,
 ) -> List[Detection]:
     max_global_intensity_shift = ctx.max_global_intensity_shift
     max_foreground_ratio = ctx.max_foreground_ratio
@@ -300,20 +317,49 @@ def _extract_detections_from_binary(
     process_x0 = ctx.process_x0
     process_y0 = ctx.process_y0
 
+    if diag is not None:
+        diag["extract_stage"] = ""
+        diag["frame_mean_roi"] = float(np.mean(frame_proc))
+        diag["bg_mean_roi"] = float(np.mean(bg_proc))
+
     if max_global_intensity_shift >= 0:
         frame_mean = float(np.mean(frame_proc))
         bg_mean = float(np.mean(bg_proc))
-        if abs(frame_mean - bg_mean) > max_global_intensity_shift:
+        shift = abs(frame_mean - bg_mean)
+        if diag is not None:
+            diag["global_intensity_shift"] = float(shift)
+        if shift > max_global_intensity_shift:
+            if diag is not None:
+                diag["discard_reason"] = "global_intensity_shift"
             return []
+    elif diag is not None:
+        diag["global_intensity_shift"] = float(abs(float(np.mean(frame_proc)) - float(np.mean(bg_proc))))
 
     if fg_count is None:
         fg_count = int(cv2.countNonZero(binary))
     if fg_count == 0:
+        if diag is not None:
+            diag["fg_ratio"] = 0.0
+            diag["contour_count"] = 0
+            diag["candidates_after_area"] = 0
+            diag["candidates_after_valid_mask"] = 0
+            diag["candidates_after_roi"] = 0
+            diag["discard_reason"] = "zero_foreground_after_morph"
         return []
 
+    fg_ratio = float(fg_count) / float(ctx.process_area)
+    if diag is not None:
+        diag["fg_ratio"] = float(fg_ratio)
+        diag["fg_pixels_final"] = int(fg_count)
+
     if max_foreground_ratio > 0:
-        fg_ratio = float(fg_count) / float(ctx.process_area)
         if fg_ratio > max_foreground_ratio:
+            if diag is not None:
+                diag["discard_reason"] = "max_foreground_ratio"
+                diag["contour_count"] = 0
+                diag["candidates_after_area"] = 0
+                diag["candidates_after_valid_mask"] = 0
+                diag["candidates_after_roi"] = 0
             return []
 
     contours_started = perf_counter()
@@ -321,11 +367,20 @@ def _extract_detections_from_binary(
     if perf is not None:
         perf.record("find_contours", perf_counter() - contours_started, frame_idx=frame_idx)
 
+    if diag is not None:
+        diag["contour_count"] = int(len(contours))
+
     detections: List[Detection] = []
+    candidates_after_area = 0
+    dropped_area = 0
+    dropped_valid_mask = 0
+    dropped_roi = 0
     for contour in contours:
         area = float(cv2.contourArea(contour))
         if area < min_area or area > max_area:
+            dropped_area += 1
             continue
+        candidates_after_area += 1
         x, y, w, h = cv2.boundingRect(contour)
         x += process_x0
         y += process_y0
@@ -341,14 +396,19 @@ def _extract_detections_from_binary(
                 or xi >= valid_mask.shape[1]
                 or valid_mask[yi, xi] == 0
             ):
+                dropped_valid_mask += 1
                 continue
         if roi_x_min >= 0 and cx < roi_x_min:
+            dropped_roi += 1
             continue
         if roi_x_max >= 0 and cx > roi_x_max:
+            dropped_roi += 1
             continue
         if roi_y_min >= 0 and cy < roi_y_min:
+            dropped_roi += 1
             continue
         if roi_y_max >= 0 and cy > roi_y_max:
+            dropped_roi += 1
             continue
         detections.append(
             Detection(
@@ -362,8 +422,34 @@ def _extract_detections_from_binary(
             )
         )
 
+    if diag is not None:
+        diag["candidates_after_area"] = int(candidates_after_area)
+        diag["contours_dropped_area"] = int(dropped_area)
+        diag["dropped_valid_mask"] = int(dropped_valid_mask)
+        diag["dropped_roi"] = int(dropped_roi)
+        diag["candidates_after_valid_mask"] = int(candidates_after_area - dropped_valid_mask)
+        diag["candidates_after_roi"] = int(len(detections))
+
+    if diag is not None and len(detections) == 0 and diag.get("discard_reason", "") == "":
+        if candidates_after_area == 0 and diag["contour_count"] > 0:
+            diag["discard_reason"] = "all_dropped_area_filter"
+        elif (candidates_after_area - dropped_valid_mask) == 0 and candidates_after_area > 0:
+            diag["discard_reason"] = "all_dropped_valid_mask"
+        elif (candidates_after_area - dropped_valid_mask) > 0 and len(detections) == 0:
+            diag["discard_reason"] = "all_dropped_roi"
+        elif diag["contour_count"] == 0 and fg_count > 0:
+            diag["discard_reason"] = "no_contours_fg_nonzero"
+
     if max_detections_per_frame > 0 and len(detections) > max_detections_per_frame:
+        if diag is not None:
+            diag["discard_reason"] = "max_detections_per_frame"
+            diag["detections_before_cap"] = int(len(detections))
         return []
+
+    if diag is not None:
+        if len(detections) > 0:
+            diag["discard_reason"] = ""
+        diag["detections_final"] = int(len(detections))
 
     return detections
 
@@ -380,6 +466,7 @@ def detect_foreground_blobs(
     context: DetectionContext | None = None,
     frame_idx: int | None = None,
     perf: PerformanceCollector | None = None,
+    frame_diag: dict | None = None,
 ) -> List[Detection]:
     ctx = context if context is not None else build_detection_context(background, cfg)
     bg = ctx.background
@@ -414,6 +501,7 @@ def detect_foreground_blobs(
                     ctx,
                     perf=perf,
                     frame_idx=frame_idx,
+                    diag=frame_diag,
                 )
                 if runtime_stats is not None:
                     runtime_stats["cuda_parity_checked_frames"] = runtime_stats.get("cuda_parity_checked_frames", 0) + 1
@@ -444,6 +532,7 @@ def detect_foreground_blobs(
                 ctx,
                 perf=perf,
                 frame_idx=frame_idx,
+                diag=frame_diag,
             )
     else:
         binary, frame_proc, bg_proc, fg_count = _binary_cpu(
@@ -451,6 +540,7 @@ def detect_foreground_blobs(
             ctx,
             perf=perf,
             frame_idx=frame_idx,
+            diag=frame_diag,
         )
 
     return _extract_detections_from_binary(
@@ -462,4 +552,5 @@ def detect_foreground_blobs(
         fg_count=fg_count,
         perf=perf,
         frame_idx=frame_idx,
+        diag=frame_diag,
     )

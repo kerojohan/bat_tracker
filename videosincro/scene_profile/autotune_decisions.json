@@ -1,0 +1,83 @@
+{
+  "recommended": {
+    "valid_region.mask_geometry.mode": "dilate",
+    "valid_region.mask_geometry.dilate_px": 25,
+    "valid_region.mask_geometry.iterations": 1,
+    "valid_region.mask_geometry.clip_to_profile_mask": true,
+    "detection.diff_threshold": 17,
+    "detection.min_area": 3,
+    "tracking.max_missed": 14,
+    "tracking.max_distance": 147.0
+  },
+  "rationale": {
+    "valid_region.mask_geometry.mode": "mode fix dilate per geometria morfol\u00f2gica de l'obertura",
+    "valid_region.mask_geometry.dilate_px": "0.034*sqrt(area_px) + 0.076*min(w,h) bbox + boost si solidity baixa; clamp [8,85]",
+    "valid_region.mask_geometry.iterations": "1 per defecte (mateix que configs d'estudi)",
+    "valid_region.mask_geometry.clip_to_profile_mask": "retall al perfil horitzontal per evitar fuites",
+    "detection.diff_threshold": "senyal combinat (p95/mediana frame, mitjanes, p99) * 4.5 + 1.5; clamp [5,35]",
+    "detection.min_area": "percentil 25 d'\u00e0rees de candidats * factor (0.35\u20130.42 segons pols de pols/insectes); clamp [3,50]",
+    "tracking.max_missed": "0.35*fps+3 clamp [6,24]",
+    "tracking.max_distance": "0.052*diagonal_frame + 0.12*sqrt(area_obertura) + 1.5*sqrt(p50_area_blob); clamp [45,170]"
+  },
+  "decision_inputs": {
+    "rules_version": "1.0",
+    "valid_region.mask_geometry.dilate_px": {
+      "area_px": 59790,
+      "sqrt_area": 244.5199378373878,
+      "min_side_bbox_px": 216.0,
+      "solidity": 0.9337176246387425,
+      "boost_irregular_px": 0.33141187680628736,
+      "raw_before_clamp": 25.061089763277476,
+      "clamp": [
+        8,
+        85
+      ]
+    },
+    "detection.min_area": {
+      "area_p10": 0.0,
+      "area_p25": 1.5,
+      "dust_proxy": 0.445859872611465,
+      "scale_used": 0.42,
+      "note": "p25_scaled",
+      "clamp": [
+        3,
+        50
+      ]
+    },
+    "detection.diff_threshold": {
+      "median_of_frame_p95_absdiff": 2.0,
+      "median_of_frame_mean_absdiff": 0.6413614153862,
+      "p99_absdiff_roi_pooled": 5.0,
+      "absdiff_temporal_stability_std_frame_means": 0.6537100076675415,
+      "delta_mean_interior_minus_corona": -15.30929879758849,
+      "combined_signal_before_affine": 3.388559138459781,
+      "affine_scale_offset": [
+        4.5,
+        1.5
+      ],
+      "raw_before_clamp": 16.748516123069013,
+      "clamp": [
+        5,
+        35
+      ]
+    },
+    "tracking.max_missed": {
+      "fps": 30.0,
+      "formula": "0.35*fps+3",
+      "clamp": [
+        6,
+        24
+      ]
+    },
+    "tracking.max_distance": {
+      "frame_diagonal_px": 2160.0,
+      "sqrt_opening_area": 244.5199378373878,
+      "sqrt_blob_area_p50": 3.24037034920393,
+      "raw_before_clamp": 146.52294806429242,
+      "clamp": [
+        45,
+        170
+      ]
+    }
+  }
+}

@@ -1,0 +1,12 @@
+metric,value
+mean_absdiff_roi,0.9302060008049011
+std_absdiff_roi,1.117164134979248
+p50_absdiff_roi,1.0
+p90_absdiff_roi,2.0
+p95_absdiff_roi,3.0
+p99_absdiff_roi,5.0
+median_of_frame_mean_absdiff,0.9240007996559143
+median_of_frame_p95_absdiff,3.0
+global_shift_mean,0.033532301584879555
+global_shift_std,0.1030939233770601
+median_stability_std,0.03326376527547836

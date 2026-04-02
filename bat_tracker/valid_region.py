@@ -538,6 +538,96 @@ def _snap_lower_contour_to_depth_gradient(
     return refined
 
 
+def _apply_mask_geometry(
+    mask: np.ndarray,
+    depth_map: np.ndarray,
+    profile_mask: np.ndarray | None,
+    config: Dict,
+) -> np.ndarray:
+    """
+    Post-process the binary valid-region mask derived from depth/saliency.
+
+    Modes (valid_region.mask_geometry.mode):
+      - baseline: no change
+      - dilate: morphological dilation of the mask (wider mouth coverage)
+      - convex_hull: fill the convex hull of the largest contour
+      - min_area_rect: fill the minimum area rotated rectangle of the largest contour
+      - gradient_band_union: union mask with a band around strong |grad(depth)|
+    """
+    mg = config.get("mask_geometry")
+    if not isinstance(mg, dict):
+        return mask
+    mode = str(mg.get("mode", "baseline")).strip().lower()
+    if mode in ("", "baseline", "none"):
+        return mask
+
+    clip = bool(mg.get("clip_to_profile_mask", True))
+
+    def _clip(m: np.ndarray) -> np.ndarray:
+        if clip and profile_mask is not None:
+            return np.where((m > 0) & (profile_mask > 0), 255, 0).astype(np.uint8)
+        return m.astype(np.uint8)
+
+    if mode == "dilate":
+        px = max(0, int(mg.get("dilate_px", 0)))
+        it = max(1, int(mg.get("iterations", 1)))
+        if px == 0:
+            return mask
+        k = 2 * px + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        out = cv2.dilate(mask, kernel, iterations=it)
+        return _clip(out)
+
+    if mode in ("convex_hull", "convexhull"):
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return mask
+        cnt = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(cnt) < 1:
+            return mask
+        hull = cv2.convexHull(cnt)
+        out = np.zeros_like(mask)
+        cv2.fillConvexPoly(out, hull, 255)
+        return _clip(out)
+
+    if mode in ("min_area_rect", "oriented_bbox", "minarearect"):
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        if not contours:
+            return mask
+        cnt = max(contours, key=cv2.contourArea)
+        if cv2.contourArea(cnt) < 1:
+            return mask
+        rect = cv2.minAreaRect(cnt)
+        box = cv2.boxPoints(rect)
+        box = np.int32(box)
+        out = np.zeros_like(mask)
+        cv2.fillPoly(out, [box], 255)
+        return _clip(out)
+
+    if mode in ("gradient_band_union", "gradient_band"):
+        gx = cv2.Sobel(depth_map.astype(np.float32), cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(depth_map.astype(np.float32), cv2.CV_32F, 0, 1, ksize=3)
+        mag = cv2.magnitude(gx, gy)
+        p = float(mg.get("gradient_percentile", 88.0))
+        p = float(max(50.0, min(99.9, p)))
+        thr = float(np.percentile(mag, p))
+        band = np.where(mag >= thr, 255, 0).astype(np.uint8)
+        bd = max(0, int(mg.get("band_dilate_px", 8)))
+        if bd > 0:
+            kk = 2 * bd + 1
+            ker = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kk, kk))
+            band = cv2.dilate(band, ker, iterations=1)
+        close_k = max(3, int(mg.get("band_close_px", 15)))
+        if close_k % 2 == 0:
+            close_k += 1
+        kclose = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_k, close_k))
+        band = cv2.morphologyEx(band, cv2.MORPH_CLOSE, kclose)
+        combined = np.where((mask > 0) | (band > 0), 255, 0).astype(np.uint8)
+        return _clip(combined)
+
+    return mask
+
+
 def _combine_masks(mask_a: np.ndarray, mask_b: np.ndarray, mode: str) -> np.ndarray:
     mode = mode.strip().lower()
     if mode == "or":
@@ -586,6 +676,7 @@ def run_valid_region(
         illumination = estimate_illumination(image, int(config.get("blur_kernel_size", 151)))
         depth_map = 255.0 - illumination.astype(np.float32)
         mask = _snap_lower_contour_to_depth_gradient(mask, depth_map, config)
+        mask = _apply_mask_geometry(mask, depth_map, None, config)
         x_start, x_end = _bbox_from_mask(mask)
         _save_depth_debug_outputs(
             original_image=image,
@@ -593,12 +684,14 @@ def run_valid_region(
             mask=mask,
             output_dir=output_dir,
         )
+        mg = config.get("mask_geometry") if isinstance(config.get("mask_geometry"), dict) else {}
         return {
             "enabled": True,
             "x_start": int(x_start),
             "x_end": int(x_end),
             "width": int(max(1, x_end - x_start + 1)),
             "method": "central_deep_layer",
+            "mask_geometry_mode": str(mg.get("mode", "baseline")),
             "output_dir": str(Path(output_dir).resolve()),
         }
 
@@ -616,6 +709,7 @@ def run_valid_region(
         illumination = estimate_illumination(image, int(config.get("blur_kernel_size", 151)))
         depth_map = 255.0 - illumination.astype(np.float32)
         mask = _snap_lower_contour_to_depth_gradient(mask, depth_map, config)
+        mask = _apply_mask_geometry(mask, depth_map, profile_mask, config)
         x_start, x_end = _bbox_from_mask(mask)
         _save_depth_debug_outputs(
             original_image=image,
@@ -623,6 +717,7 @@ def run_valid_region(
             mask=mask,
             output_dir=output_dir,
         )
+        mg = config.get("mask_geometry") if isinstance(config.get("mask_geometry"), dict) else {}
         return {
             "enabled": True,
             "x_start": int(x_start),
@@ -630,6 +725,7 @@ def run_valid_region(
             "width": int(max(1, x_end - x_start + 1)),
             "method": "hybrid_deep_layer_profile",
             "hybrid_combine_mode": combine_mode.lower(),
+            "mask_geometry_mode": str(mg.get("mode", "baseline")),
             "output_dir": str(Path(output_dir).resolve()),
         }
 

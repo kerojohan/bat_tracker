@@ -1,0 +1,4 @@
+run,tracks,detections,events_total,exits,enters,outside,inside,mg_mode,mg_dilate_px,mg_iterations,mg_clip,diff_threshold,min_area,max_missed,max_distance
+manual,18,208,18,10,1,0,7,,,,,12,8,10,120.0
+manual_geom_matched,17,216,17,9,1,0,7,dilate,31,1,True,12,8,10,120.0
+autotune,16,185,16,9,1,0,6,dilate,31,1,True,17,10,12,114.0

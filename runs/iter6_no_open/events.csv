@@ -1,0 +1,6 @@
+video_id,track_id,time_start_sec,time_end_sec,duration_sec,frame_start,frame_end,num_detections,x_start,y_start,x_end,y_end,displacement_px,path_length_px,straightness,mean_speed_px_sec,mean_area,start_in_valid_region,end_in_valid_region,direction
+retallat,206,125.8,126.2333,0.4333,3774,3787,14,662.5,653.0,1160.0,3.5,818.14,951.46,0.8599,2195.67,1264.64,True,False,exits
+retallat,241,130.0,130.5333,0.5333,3900,3916,16,1302.0,255.5,715.0,663.0,714.58,761.32,0.9386,1427.47,1007.56,False,True,enters
+retallat,288,157.1667,157.4667,0.3,4715,4724,10,1134.0,21.5,751.0,626.0,715.62,780.33,0.9171,2601.1,822.9,False,True,enters
+retallat,298,157.5,157.8667,0.3667,4725,4736,9,1161.5,101.5,774.5,642.5,665.17,744.91,0.893,2031.57,1196.89,False,True,enters
+retallat,314,158.4,158.7333,0.3333,4752,4762,11,1056.5,492.5,698.0,658.0,394.86,454.16,0.8694,1362.47,813.09,False,True,enters

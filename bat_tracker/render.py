@@ -120,3 +120,86 @@ def render_tracks_overlay(
         return out
 
     return canvas
+
+
+def render_tracks_overlay_event_categories(
+    background_gray: np.ndarray,
+    points: Sequence[TrackPoint],
+    category_by_track_id: Dict[int, str],
+    color_fn,
+    line_thickness: int,
+    start_radius: int,
+    alpha: float = 1.0,
+    legend_only: bool = False,
+) -> np.ndarray:
+    """
+    Pinta cada track amb el color retornat per color_fn(categoria).
+    Si legend_only, genera només una llegenda (fons blanc) sense tracks.
+    """
+    if legend_only:
+        h, w = 280, 520
+        canvas = np.full((h, w, 3), 248, dtype=np.uint8)
+        lines = [
+            ("exit", "exit (classificat)"),
+            ("no_exit_geometry_cross_only", "creua obertura pero extrems fora"),
+            ("no_exit_geometry_outside", "fora-fora sense creuar"),
+            ("no_exit_geometry_enters", "enters"),
+            ("no_exit_geometry_inside", "inside"),
+            ("no_exit_fragmentation", "fragmentacio (forats al track)"),
+            ("no_exit_gate_final", "descartat gate valid_region"),
+            ("no_exit_length_or_shape", "descartat longitud/forma"),
+        ]
+        y = 22
+        for cat, label in lines:
+            bgr = color_fn(cat)
+            cv2.circle(canvas, (14, y - 5), 6, bgr, -1, lineType=cv2.LINE_AA)
+            cv2.putText(
+                canvas,
+                label,
+                (28, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (20, 20, 20),
+                1,
+                cv2.LINE_AA,
+            )
+            y += 28
+        return canvas
+
+    base = cv2.cvtColor(background_gray, cv2.COLOR_GRAY2BGR)
+    canvas = base.copy()
+
+    by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
+    for point in points:
+        by_track[point.track_id].append(point)
+
+    for track_id, track_points in by_track.items():
+        track_points = sorted(track_points, key=lambda p: p.frame)
+        cat = category_by_track_id.get(track_id, "unknown")
+        color = color_fn(cat)
+
+        if len(track_points) >= 2:
+            for p0, p1 in zip(track_points[:-1], track_points[1:]):
+                cv2.line(
+                    canvas,
+                    (int(round(p0.x)), int(round(p0.y))),
+                    (int(round(p1.x)), int(round(p1.y))),
+                    color,
+                    thickness=max(1, line_thickness),
+                    lineType=cv2.LINE_AA,
+                )
+
+        start = track_points[0]
+        cv2.circle(
+            canvas,
+            (int(round(start.x)), int(round(start.y))),
+            radius=max(2, start_radius),
+            color=color,
+            thickness=-1,
+            lineType=cv2.LINE_AA,
+        )
+
+    alpha = float(max(0.0, min(1.0, alpha)))
+    if alpha < 1.0:
+        return cv2.addWeighted(canvas, alpha, base, 1.0 - alpha, 0)
+    return canvas

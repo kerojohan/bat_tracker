@@ -1,0 +1,26 @@
+# Manifest d'exemple per a `python -m bat_tracker.scene_profile_batch`.
+# Els camins relatius es resolen respecte al directori on està aquest fitxer.
+#
+# Opcional a l'arrel del manifest:
+#   sample_frames: 48
+#   strict_parity: true
+# Opcional per entrada:
+#   sample_frames: 64
+#   strict_parity: false
+
+sample_frames: 48
+strict_parity: true
+
+videos:
+  - name: case_01
+    video: /home/jcaparros/BORRAR/DSCF0005.AVI
+    config: config.out3_clean.yaml
+  - name: case_02
+    video: /home/jcaparros/BORRAR/2023_0919_212201_007.MOV
+    config: config.out3_clean.yaml
+  - name: case_03
+    video: /home/jcaparros/BORRAR/rabella_20211016_DSCF0005.mp4
+    config: config.out3_clean.yaml
+  - name: case_04
+    video: /home/jcaparros/BORRAR/video_sincronitzat.mp4
+    config: config.out3_clean.yaml

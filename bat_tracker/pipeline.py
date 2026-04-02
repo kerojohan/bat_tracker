@@ -10,18 +10,25 @@ from math import hypot
 from pathlib import Path
 from statistics import mean
 from time import perf_counter
-from typing import Dict, List
+from typing import Any, Dict, List
 
 import cv2
 import numpy as np
 
 from .background import compute_background_median
 from .compute import build_execution_plan
-from .config import load_config
+from .config import load_config_with_user_paths
 from .detection import build_detection_context
 from .detection import detect_foreground_blobs
 from .perf import PerformanceCollector
+from .event_analysis import build_merged_track_event_rows
+from .event_analysis import build_raw_track_event_rows
+from .event_analysis import classify_event_direction
+from .event_analysis import overlay_color_for_category
+from .event_analysis import summarize_exit_blockers
 from .render import render_tracks_overlay
+from .render import render_tracks_overlay_event_categories
+from .track_smoothing import smooth_track_points
 from .tracker import GreedyTracker, TrackPoint
 from .valid_region import load_image as load_valid_region_image
 from .valid_region import run_valid_region
@@ -88,6 +95,7 @@ def _write_events_csv(
     path: Path,
     points: List[TrackPoint],
     valid_mask: np.ndarray | None,
+    direction_mode: str = "endpoint",
 ) -> None:
     by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
     for p in points:
@@ -109,7 +117,7 @@ def _write_events_csv(
         if valid_mask is not None:
             s_in = _point_in_mask(start, valid_mask)
             e_in = _point_in_mask(end, valid_mask)
-            direction = _classify_direction(s_in, e_in)
+            direction = classify_event_direction(tps, valid_mask, direction_mode)
         else:
             s_in = None
             e_in = None
@@ -294,6 +302,7 @@ def _filter_track_points(
     tracking_cfg: Dict,
     fps: float,
     valid_mask: np.ndarray | None = None,
+    rejections: List[Dict] | None = None,
 ) -> List[TrackPoint]:
     min_track_length_cfg = int(tracking_cfg.get("min_track_length", 1))
     min_track_duration_sec = float(tracking_cfg.get("min_track_duration_sec", 0.0))
@@ -315,29 +324,45 @@ def _filter_track_points(
     for point in points:
         by_track[point.track_id].append(point)
 
+    def _reject(track_id: int, reason: str, **extra: object) -> None:
+        if rejections is not None:
+            rejections.append({"track_id": track_id, "reason": reason, **extra})
+
     filtered: List[TrackPoint] = []
     for track_points in by_track.values():
         track_points = sorted(track_points, key=lambda p: p.frame)
-        if len(track_points) < min_track_length:
+        tid = track_points[0].track_id
+        n = len(track_points)
+        if n < min_track_length:
+            _reject(tid, "min_track_length", length=n, min_required=min_track_length)
             continue
 
         start = track_points[0]
         end = track_points[-1]
         displacement = hypot(end.x - start.x, end.y - start.y)
         if displacement < min_track_displacement:
+            _reject(tid, "min_track_displacement", displacement=displacement, min_required=min_track_displacement)
             continue
 
         path_length = _path_length(track_points)
         if path_length < min_track_path_length:
+            _reject(tid, "min_track_path_length", path_length=path_length, min_required=min_track_path_length)
             continue
 
         if min_track_straightness > 0.0 and path_length > 0.0:
             straightness = displacement / path_length
             if straightness < min_track_straightness:
+                _reject(tid, "min_track_straightness", straightness=straightness, min_required=min_track_straightness)
                 continue
 
         if require_start_or_end_in_valid_region and gate_mask is not None:
             if not (_point_in_mask(start, gate_mask) or _point_in_mask(end, gate_mask)):
+                _reject(
+                    tid,
+                    "require_start_or_end_in_valid_region",
+                    start_in=_point_in_mask(start, gate_mask),
+                    end_in=_point_in_mask(end, gate_mask),
+                )
                 continue
 
         filtered.extend(track_points)
@@ -581,7 +606,8 @@ def _export_track_clips(
 
 def run_pipeline(input_video: str, output_dir: str, config_path: str | None = None) -> Dict:
     pipeline_started = perf_counter()
-    cfg = load_config(config_path)
+    cfg, explicit_yaml_paths = load_config_with_user_paths(config_path)
+    scene_autotune_block: Dict[str, Any] = {"enabled": False}
     execution_plan = build_execution_plan(cfg)
     execution_cfg = cfg.get("execution", {})
     strict_parity = bool(execution_cfg.get("strict_parity", True))
@@ -633,6 +659,55 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     background_path = out_dir / "background.png"
     cv2.imwrite(str(background_path), background)
     progress.complete_stage("background", detail="background ready")
+
+    sat_cfg = cfg.get("scene_auto_tune", {})
+    if bool(sat_cfg.get("enabled", False)):
+        from .scene_auto_tune import (
+            apply_recommendations_to_config,
+            final_parameter_sources,
+            snapshot_tunable_keys,
+        )
+        from .scene_profile import build_scene_profile
+
+        profile_dir = out_dir / str(sat_cfg.get("profile_subdir", "scene_profile"))
+        write_prof = bool(sat_cfg.get("write_profile", True))
+        snapshot_before = snapshot_tunable_keys(cfg)
+        profile = build_scene_profile(
+            video_path=input_video,
+            background=background,
+            merged_config=cfg,
+            out_dir=profile_dir,
+            sample_frames=int(sat_cfg.get("sample_frames", 48)),
+            write_artifacts=write_prof,
+        )
+        apply_ok = bool(sat_cfg.get("use_recommended_values", True))
+        allow_ov = bool(sat_cfg.get("overrides_allowed", False))
+        apply_report: Dict[str, Any] = {"applied": {}, "skipped_explicit": {}}
+        if apply_ok:
+            apply_report = apply_recommendations_to_config(
+                cfg,
+                profile["recommended"],
+                explicit_yaml_paths,
+                allow_ov,
+            )
+        tune_keys = list(profile["recommended"].keys())
+        scene_autotune_block = {
+            "enabled": True,
+            "profile_dir": str(profile_dir.resolve()),
+            "scene_profile_json": str((profile_dir / "scene_profile.json").resolve()) if write_prof else None,
+            "autotune_decisions_json": str((profile_dir / "autotune_decisions.json").resolve())
+            if write_prof
+            else None,
+            "write_profile": write_prof,
+            "use_recommended_values": apply_ok,
+            "overrides_allowed": allow_ov,
+            "recommended": profile.get("recommended"),
+            "apply_report": apply_report,
+            "final_parameter_sources": final_parameter_sources(cfg, tune_keys, apply_report),
+            "snapshot_before_apply": snapshot_before,
+            "rules_version": (profile.get("decision_inputs") or {}).get("rules_version"),
+        }
+
     valid_mask: np.ndarray | None = None
     valid_mask_for_detection: np.ndarray | None = None
     valid_region_meta: Dict = {"enabled": False}
@@ -674,6 +749,13 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     )
     burst_gate = TemporalBurstGate.from_detection_cfg(cfg["detection"])
     detection_context = build_detection_context(background, cfg["detection"])
+    diag_cfg = cfg.get("diagnostics", {})
+    diagnostics_enabled = bool(diag_cfg.get("enabled", False))
+    frame_diag_rows: List[Dict] = []
+    miss_saved = 0
+    miss_max = max(0, int(diag_cfg.get("miss_sample_max", 40)))
+    miss_stride = max(0, int(diag_cfg.get("sample_miss_stride", 0)))
+    miss_diff_thr = float(diag_cfg.get("miss_diff_threshold", 18))
 
     all_points: List[TrackPoint] = []
     frame_processed = 0
@@ -682,6 +764,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
 
     for frame_idx, gray in iter_gray_frames(input_video, perf=perf):
         frame_started = perf_counter()
+        frame_diag: Dict | None = {} if diagnostics_enabled else None
         dets = detect_foreground_blobs(
             gray,
             background,
@@ -693,10 +776,45 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             context=detection_context,
             frame_idx=frame_idx,
             perf=perf,
+            frame_diag=frame_diag,
         )
+        burst_suppressed = False
         if burst_gate is not None and not burst_gate.should_keep(frame_idx, len(dets)):
             dets = []
+            burst_suppressed = True
             suppressed_burst_frames += 1
+        if diagnostics_enabled and frame_diag is not None:
+            frame_diag["frame"] = frame_idx
+            frame_diag["time_sec"] = round(frame_idx / max(1e-6, meta.fps), 4)
+            frame_diag["burst_suppressed"] = burst_suppressed
+            frame_diag["dets_after_detection"] = int(len(dets))
+            frame_diag_rows.append(frame_diag)
+            if (
+                miss_max > 0
+                and miss_stride > 0
+                and frame_idx % miss_stride == 0
+                and miss_saved < miss_max
+                and len(dets) == 0
+                and not burst_suppressed
+                and float(frame_diag.get("mean_absdiff_roi", 0.0)) >= miss_diff_thr
+            ):
+                inter_dir = out_dir / str(diag_cfg.get("intermediate_subdir", "diagnostics_intermediate"))
+                inter_dir.mkdir(parents=True, exist_ok=True)
+                reason = str(frame_diag.get("discard_reason", "")) or "zero_or_filtered"
+                tag = f"miss_f{frame_idx:06d}_mean{frame_diag.get('mean_absdiff_roi', 0):.1f}_{reason}.png"
+                vis = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+                cv2.putText(
+                    vis,
+                    f"f={frame_idx} mean_absdiff={frame_diag.get('mean_absdiff_roi', 0):.2f} {reason}",
+                    (12, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.65,
+                    (0, 165, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+                cv2.imwrite(str(inter_dir / tag), vis)
+                miss_saved += 1
         tracker_started = perf_counter()
         frame_points = tracker.step(frame_idx, dets)
         perf.record("tracker", perf_counter() - tracker_started, frame_idx=frame_idx)
@@ -716,31 +834,169 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
 
     progress.start_stage("postprocess")
     postprocess_started = perf_counter()
-    filtered_points = _filter_track_points(all_points, cfg["tracking"], meta.fps, valid_mask=valid_mask)
-    filtered_points, merges_applied = _auto_merge_track_points(filtered_points, cfg["tracking"])
+    track_rejections: List[Dict] = []
+    filtered_pre_merge = _filter_track_points(
+        all_points,
+        cfg["tracking"],
+        meta.fps,
+        valid_mask=valid_mask,
+        rejections=track_rejections if diagnostics_enabled else None,
+    )
+    filtered_points, merges_applied = _auto_merge_track_points(filtered_pre_merge, cfg["tracking"])
     perf.record("postprocess_stage", perf_counter() - postprocess_started, executions=1)
     progress.complete_stage("postprocess", detail="postprocess done")
 
     progress.start_stage("exports_core")
+    if diagnostics_enabled:
+        if frame_diag_rows:
+            diag_csv = out_dir / str(diag_cfg.get("frame_metrics_csv", "diagnostics_frame_metrics.csv"))
+            fieldnames = sorted({key for row in frame_diag_rows for key in row.keys()})
+            with diag_csv.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(frame_diag_rows)
+        tf_csv = out_dir / str(diag_cfg.get("track_filter_csv", "diagnostics_track_filter.csv"))
+        tf_fields = (
+            sorted({key for row in track_rejections for key in row.keys()})
+            if track_rejections
+            else ["track_id", "reason"]
+        )
+        with tf_csv.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.DictWriter(handle, fieldnames=tf_fields, extrasaction="ignore")
+            writer.writeheader()
+            for row in track_rejections:
+                writer.writerow(row)
+
     tracks_csv_path = out_dir / "tracks.csv"
     _write_tracks_csv(tracks_csv_path, filtered_points)
 
-    events_csv_path = out_dir / "events.csv"
-    _write_events_csv(events_csv_path, filtered_points, valid_mask)
+    out_cfg_export = cfg.get("output", {})
+    smoothing_on = bool(out_cfg_export.get("trajectory_smoothing_enabled", False))
+    ts_window = int(out_cfg_export.get("trajectory_smoothing_window", 5))
+    smoothed_points: List[TrackPoint] | None = None
+    if smoothing_on:
+        smoothed_points = smooth_track_points(filtered_points, ts_window)
 
-    overlay = render_tracks_overlay(
-        background_gray=background,
-        points=filtered_points,
-        line_thickness=int(cfg["output"]["overlay_line_thickness"]),
-        start_radius=int(cfg["output"]["overlay_start_radius"]),
-        alpha=float(cfg["output"].get("overlay_alpha", 1.0)),
-        draw_track_labels=bool(cfg["output"].get("overlay_draw_track_labels", False)),
-        draw_track_labels_at_end=bool(cfg["output"].get("overlay_draw_track_labels_at_end", False)),
-        label_font_scale=float(cfg["output"].get("overlay_label_font_scale", 0.5)),
-        label_thickness=int(cfg["output"].get("overlay_label_thickness", 1)),
-    )
+    events_csv_path = out_dir / "events.csv"
+    events_cfg = cfg.get("events", {})
+    direction_mode = str(events_cfg.get("direction_mode", "endpoint"))
+    points_for_events = smoothed_points if smoothed_points is not None else filtered_points
+    _write_events_csv(events_csv_path, points_for_events, valid_mask, direction_mode=direction_mode)
+
+    event_analysis_enabled = bool(cfg["output"].get("event_analysis_enabled", False))
+    event_analysis_summary: Dict = {}
+    merged_event_rows: List[Dict] = []
+    if event_analysis_enabled:
+        frag_gap = max(0, int(cfg["output"].get("event_analysis_fragmentation_gap", 6)))
+        raw_event_rows = build_raw_track_event_rows(
+            all_points,
+            filtered_pre_merge,
+            valid_mask,
+            cfg["tracking"],
+            meta.fps,
+            frag_gap,
+            events_direction_mode=direction_mode,
+        )
+        merged_event_rows = build_merged_track_event_rows(
+            filtered_points,
+            valid_mask,
+            cfg["tracking"],
+            meta.fps,
+            frag_gap,
+            events_direction_mode=direction_mode,
+        )
+        raw_path = out_dir / "event_track_report_raw.csv"
+        merged_path = out_dir / "event_track_report_merged.csv"
+        if raw_event_rows:
+            keys_raw = sorted({k for row in raw_event_rows for k in row.keys()})
+            with raw_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=keys_raw, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(raw_event_rows)
+        if merged_event_rows:
+            keys_m = sorted({k for row in merged_event_rows for k in row.keys()})
+            with merged_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=keys_m, extrasaction="ignore")
+                writer.writeheader()
+                writer.writerows(merged_event_rows)
+        event_analysis_summary = summarize_exit_blockers(raw_event_rows, merged_event_rows)
+        event_analysis_summary["overlay_categories_merged"] = dict(
+            Counter(str(r.get("overlay_category", "unknown")) for r in merged_event_rows)
+        )
+
+    overlay_line_t = int(cfg["output"]["overlay_line_thickness"])
+    overlay_start_r = int(cfg["output"]["overlay_start_radius"])
+    overlay_alpha_v = float(cfg["output"].get("overlay_alpha", 1.0))
+    overlay_lbl = bool(cfg["output"].get("overlay_draw_track_labels", False))
+    overlay_lbl_end = bool(cfg["output"].get("overlay_draw_track_labels_at_end", False))
+    overlay_lbl_scale = float(cfg["output"].get("overlay_label_font_scale", 0.5))
+    overlay_lbl_th = int(cfg["output"].get("overlay_label_thickness", 1))
+
+    if smoothed_points is not None:
+        overlay_raw = render_tracks_overlay(
+            background_gray=background,
+            points=filtered_points,
+            line_thickness=overlay_line_t,
+            start_radius=overlay_start_r,
+            alpha=overlay_alpha_v,
+            draw_track_labels=overlay_lbl,
+            draw_track_labels_at_end=overlay_lbl_end,
+            label_font_scale=overlay_lbl_scale,
+            label_thickness=overlay_lbl_th,
+        )
+        cv2.imwrite(str(out_dir / "tracks_overlay_raw.png"), overlay_raw)
+        overlay_smoothed = render_tracks_overlay(
+            background_gray=background,
+            points=smoothed_points,
+            line_thickness=overlay_line_t,
+            start_radius=overlay_start_r,
+            alpha=overlay_alpha_v,
+            draw_track_labels=overlay_lbl,
+            draw_track_labels_at_end=overlay_lbl_end,
+            label_font_scale=overlay_lbl_scale,
+            label_thickness=overlay_lbl_th,
+        )
+        cv2.imwrite(str(out_dir / "tracks_overlay_smoothed.png"), overlay_smoothed)
+        overlay = overlay_raw
+    else:
+        overlay = render_tracks_overlay(
+            background_gray=background,
+            points=filtered_points,
+            line_thickness=overlay_line_t,
+            start_radius=overlay_start_r,
+            alpha=overlay_alpha_v,
+            draw_track_labels=overlay_lbl,
+            draw_track_labels_at_end=overlay_lbl_end,
+            label_font_scale=overlay_lbl_scale,
+            label_thickness=overlay_lbl_th,
+        )
     overlay_path = out_dir / "tracks_overlay.png"
     cv2.imwrite(str(overlay_path), overlay)
+
+    if event_analysis_enabled and merged_event_rows:
+        category_by_track = {int(r["track_id"]): str(r.get("overlay_category", "unknown")) for r in merged_event_rows}
+        overlay_cat = render_tracks_overlay_event_categories(
+            background_gray=background,
+            points=filtered_points,
+            category_by_track_id=category_by_track,
+            color_fn=overlay_color_for_category,
+            line_thickness=int(cfg["output"]["overlay_line_thickness"]),
+            start_radius=int(cfg["output"]["overlay_start_radius"]),
+            alpha=float(cfg["output"].get("overlay_alpha", 1.0)),
+        )
+        legend = render_tracks_overlay_event_categories(
+            background_gray=background,
+            points=[],
+            category_by_track_id={},
+            color_fn=overlay_color_for_category,
+            line_thickness=int(cfg["output"]["overlay_line_thickness"]),
+            start_radius=int(cfg["output"]["overlay_start_radius"]),
+            alpha=1.0,
+            legend_only=True,
+        )
+        cv2.imwrite(str(out_dir / "tracks_overlay_event_categories.png"), overlay_cat)
+        cv2.imwrite(str(out_dir / "tracks_overlay_event_legend.png"), legend)
+
     progress.complete_stage("exports_core", detail="csv and overlay exported")
 
     track_clip_outputs: Dict[str, str] = {}
@@ -761,7 +1017,20 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     perf_summary = perf.summary()
     perf_summary["pipeline_total_wall_sec"] = max(0.0, perf_counter() - pipeline_started)
 
+    trajectory_smoothing_meta = {
+        "enabled": smoothing_on,
+        "window": ts_window,
+    }
+    overlay_smoothing_paths: Dict[str, str] = {}
+    if smoothed_points is not None:
+        overlay_smoothing_paths = {
+            "tracks_overlay_raw_png": str((out_dir / "tracks_overlay_raw.png").resolve()),
+            "tracks_overlay_smoothed_png": str((out_dir / "tracks_overlay_smoothed.png").resolve()),
+        }
+
     meta_payload = {
+        "scene_autotune": scene_autotune_block,
+        "trajectory_smoothing": trajectory_smoothing_meta,
         "video": {
             "input_path": str(Path(input_video).resolve()),
             "video_id": meta.video_id,
@@ -778,6 +1047,23 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "tracks_merged_auto": len(merges_applied),
             **background_runtime_stats,
             **detection_runtime_stats,
+            **(
+                {
+                    "diagnostics_frame_rows": len(frame_diag_rows),
+                    "diagnostics_discard_top": dict(
+                        Counter(
+                            str(r.get("discard_reason", "")) for r in frame_diag_rows
+                        ).most_common(12)
+                    ),
+                    "diagnostics_burst_frames_logged": sum(
+                        1 for r in frame_diag_rows if r.get("burst_suppressed")
+                    ),
+                    "diagnostics_miss_samples_saved": miss_saved,
+                    "diagnostics_track_rejections": len(track_rejections),
+                }
+                if diagnostics_enabled
+                else {}
+            ),
         },
         "execution": {
             "requested_device": execution_plan.requested_device,
@@ -787,13 +1073,29 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "selection_reason": execution_plan.reason,
         },
         "performance": perf_summary,
+        "event_analysis": event_analysis_summary if event_analysis_enabled else {},
         "outputs": {
             "background_png": str(background_path.resolve()),
             "tracks_csv": str(tracks_csv_path.resolve()),
             "events_csv": str(events_csv_path.resolve()),
             "tracks_overlay_png": str(overlay_path.resolve()),
+            **overlay_smoothing_paths,
             "track_clips": track_clip_outputs,
             **valid_region_outputs,
+            **(
+                {
+                    "event_track_report_raw_csv": str((out_dir / "event_track_report_raw.csv").resolve()),
+                    "event_track_report_merged_csv": str((out_dir / "event_track_report_merged.csv").resolve()),
+                    "tracks_overlay_event_categories_png": str(
+                        (out_dir / "tracks_overlay_event_categories.png").resolve()
+                    ),
+                    "tracks_overlay_event_legend_png": str(
+                        (out_dir / "tracks_overlay_event_legend.png").resolve()
+                    ),
+                }
+                if event_analysis_enabled
+                else {}
+            ),
         },
         "postprocess": {
             "auto_merge_enabled": bool(cfg["tracking"].get("auto_merge_suggested", False)),

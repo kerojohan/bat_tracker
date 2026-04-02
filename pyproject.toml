@@ -23,6 +23,12 @@ dev = [
 [project.scripts]
 bat-tracker = "bat_tracker.cli:main"
 bat-valid-region = "bat_tracker.valid_region:main"
+bat-geometry-review = "bat_tracker.valid_region_geometry_review:main"
+bat-mask-geometry-study = "bat_tracker.mask_geometry_study:main"
+bat-mask-dilate-sweep = "bat_tracker.mask_dilate_fine_sweep:main"
+bat-scene-profile = "bat_tracker.scene_profile:main"
+bat-scene-profile-batch = "bat_tracker.scene_profile_batch:main"
+bat-pipeline-autotune-eval = "bat_tracker.pipeline_autotune_eval_batch:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

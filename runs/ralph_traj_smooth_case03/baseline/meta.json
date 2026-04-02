@@ -1,0 +1,307 @@
+{
+  "scene_autotune": {
+    "enabled": false
+  },
+  "trajectory_smoothing": {
+    "enabled": false,
+    "window": 5
+  },
+  "video": {
+    "input_path": "/home/jcaparros/BORRAR/rabella_20211016_DSCF0005.mp4",
+    "video_id": "rabella_20211016_DSCF0005",
+    "fps": 25.0,
+    "frame_count_reported": 1502,
+    "width": 1024,
+    "height": 576
+  },
+  "parameters": {
+    "execution": {
+      "device": "auto",
+      "strict_parity": true
+    },
+    "background": {
+      "sample_frames": 120,
+      "uniform_sampling": true
+    },
+    "detection": {
+      "blur_kernel": 9,
+      "threshold_mode": "fixed",
+      "diff_threshold": 12,
+      "otsu_offset": 0,
+      "morph_open": 3,
+      "morph_close": 3,
+      "min_area": 8,
+      "max_area": 50000,
+      "max_global_intensity_shift": -1.0,
+      "max_foreground_ratio": 0.04,
+      "max_detections_per_frame": 80,
+      "roi_x_min": -1.0,
+      "roi_x_max": -1.0,
+      "roi_y_min": -1.0,
+      "roi_y_max": 780.0,
+      "temporal_burst_min_detections": 16,
+      "temporal_burst_window_frames": 10,
+      "temporal_burst_trigger_frames": 3,
+      "temporal_burst_cooldown_frames": 24
+    },
+    "tracking": {
+      "max_distance": 120.0,
+      "max_missed": 10,
+      "min_track_length": 6,
+      "min_track_duration_sec": 0.1,
+      "min_track_displacement": 20.0,
+      "min_track_path_length": 28.0,
+      "min_track_straightness": 0.08,
+      "require_start_or_end_in_valid_region": true,
+      "valid_region_gate_dilate_px": 24,
+      "auto_merge_suggested": true,
+      "merge_max_gap_frames": 6,
+      "merge_max_endpoint_distance": 60.0,
+      "merge_overlap_min_common_frames": 3,
+      "merge_overlap_max_mean_distance": 60.0,
+      "merge_overlap_min_direction_cosine": 0.8
+    },
+    "valid_region": {
+      "enabled": true,
+      "method": "hybrid_deep_layer_profile",
+      "apply_to_detection": false,
+      "hybrid_combine_mode": "and",
+      "input_image": "",
+      "blur_kernel_size": 151,
+      "profile_smooth_window": 31,
+      "threshold_ratio": 0.45,
+      "safety_margin": 10,
+      "min_region_width_ratio": 0.35,
+      "depth_percentile": 85.0,
+      "depth_morph_kernel": 9,
+      "depth_min_area_ratio": 0.02,
+      "depth_layer_percentiles": [
+        82,
+        78,
+        72,
+        66
+      ],
+      "depth_layer_dilate_px": [
+        0,
+        0,
+        0,
+        0
+      ],
+      "bottom_contour_snap_enabled": true,
+      "bottom_contour_search_up_px": 20,
+      "bottom_contour_search_down_px": 110,
+      "bottom_contour_smooth_window": 35,
+      "bottom_contour_gradient_quantile": 52.0,
+      "bottom_contour_regularization": 1.25,
+      "bottom_contour_max_step_px": 8,
+      "bottom_contour_downward_bias": 0.2,
+      "bottom_contour_regularization_mix": 0.9,
+      "bottom_contour_deepest_strong_ratio": 0.62,
+      "output_subdir": "valid_region"
+    },
+    "events": {
+      "direction_mode": "endpoint"
+    },
+    "output": {
+      "overlay_line_thickness": 2,
+      "overlay_start_radius": 5,
+      "overlay_alpha": 1.0,
+      "overlay_draw_track_labels": true,
+      "overlay_draw_track_labels_at_end": true,
+      "overlay_label_font_scale": 0.5,
+      "overlay_label_thickness": 1,
+      "progress_enabled": false,
+      "progress_step_percent": 5,
+      "export_track_clips": false,
+      "track_clips_subdir": "track_clips",
+      "track_clips_padding_frames": 5,
+      "event_analysis_enabled": false,
+      "event_analysis_fragmentation_gap": 6,
+      "trajectory_smoothing_enabled": false,
+      "trajectory_smoothing_window": 5
+    },
+    "diagnostics": {
+      "enabled": false,
+      "frame_metrics_csv": "diagnostics_frame_metrics.csv",
+      "track_filter_csv": "diagnostics_track_filter.csv",
+      "intermediate_subdir": "diagnostics_intermediate",
+      "save_binary_stride": 0,
+      "sample_miss_stride": 0,
+      "miss_diff_threshold": 18
+    },
+    "scene_auto_tune": {
+      "enabled": false,
+      "write_profile": false,
+      "use_recommended_values": false,
+      "overrides_allowed": false,
+      "profile_subdir": "scene_profile",
+      "sample_frames": 48
+    }
+  },
+  "valid_region": {
+    "enabled": true,
+    "x_start": 55,
+    "x_end": 476,
+    "width": 422,
+    "method": "hybrid_deep_layer_profile",
+    "hybrid_combine_mode": "and",
+    "mask_geometry_mode": "baseline",
+    "output_dir": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03/baseline/valid_region"
+  },
+  "metrics": {
+    "frames_processed": 1502,
+    "detections_kept": 208,
+    "tracks_total": 18,
+    "track_length_min": 7,
+    "track_length_max": 26,
+    "track_length_mean": 11.555555555555555,
+    "frames_suppressed_temporal_burst": 0,
+    "tracks_merged_auto": 2,
+    "background_gpu_used": 0,
+    "background_gpu_unavailable": 0,
+    "background_gpu_failures": 0,
+    "background_gpu_parity_checked": 0,
+    "background_gpu_parity_mismatch": 0,
+    "cuda_frames_used": 0,
+    "cuda_runtime_failures": 0,
+    "cuda_parity_checked_frames": 0,
+    "cuda_parity_mismatch_frames": 0
+  },
+  "execution": {
+    "requested_device": "auto",
+    "selected_device": "cpu",
+    "gpu_available": false,
+    "strict_parity": true,
+    "selection_reason": "auto_cpu:no_cuda_device"
+  },
+  "performance": {
+    "pipeline_total_sec": 6.061113639998439,
+    "frames_processed": 1502,
+    "fps_effective": 247.80924582704026,
+    "phases": {
+      "background_absdiff": {
+        "total_sec": 0.0984174829955009,
+        "percent_total": 1.6237524791818003,
+        "mean_sec_per_frame": 6.55242896108528e-05,
+        "median_sec_per_frame": 6.18425001448486e-05,
+        "p95_sec_per_frame": 9.542479983792873e-05,
+        "executions": 1502
+      },
+      "cvt_color": {
+        "total_sec": 0.40692935398874397,
+        "percent_total": 6.713772058377852,
+        "mean_sec_per_frame": 0.0002709250026556218,
+        "median_sec_per_frame": 0.0003011110002262285,
+        "p95_sec_per_frame": 0.0003696621497510933,
+        "executions": 1502
+      },
+      "find_contours": {
+        "total_sec": 0.11800987497917959,
+        "percent_total": 1.9469998747492545,
+        "mean_sec_per_frame": 7.856849199679066e-05,
+        "median_sec_per_frame": 8.788400009507313e-05,
+        "p95_sec_per_frame": 0.0001502258005530166,
+        "executions": 1154
+      },
+      "gaussian_blur": {
+        "total_sec": 0.7976327580272482,
+        "percent_total": 13.159838363094172,
+        "mean_sec_per_frame": 0.000531047109205891,
+        "median_sec_per_frame": 0.0004745030000776751,
+        "p95_sec_per_frame": 0.0007465029992090427,
+        "executions": 1502
+      },
+      "morphology": {
+        "total_sec": 0.3300752470640873,
+        "percent_total": 5.445785488756688,
+        "mean_sec_per_frame": 0.00021975715516916599,
+        "median_sec_per_frame": 0.00020409249827935128,
+        "p95_sec_per_frame": 0.00033713625107338884,
+        "executions": 2968
+      },
+      "postprocess_stage": {
+        "total_sec": 0.011351619999913964,
+        "percent_total": 0.18728604468001508,
+        "mean_sec_per_frame": 0.0,
+        "median_sec_per_frame": 0.0,
+        "p95_sec_per_frame": 0.0,
+        "executions": 1
+      },
+      "prefetch_queue_wait": {
+        "total_sec": 0.12079659601840831,
+        "percent_total": 1.9929769212913062,
+        "mean_sec_per_frame": 8.04238322359576e-05,
+        "median_sec_per_frame": 3.189999915775843e-06,
+        "p95_sec_per_frame": 0.00045043429954603223,
+        "executions": 1502
+      },
+      "threshold": {
+        "total_sec": 0.03589493395156751,
+        "percent_total": 0.5922168116877076,
+        "mean_sec_per_frame": 2.3898091845251338e-05,
+        "median_sec_per_frame": 2.1794500753458124e-05,
+        "p95_sec_per_frame": 3.775874993152684e-05,
+        "executions": 1502
+      },
+      "total_frame": {
+        "total_sec": 1.48800313301399,
+        "percent_total": 24.549995617874163,
+        "mean_sec_per_frame": 0.0009906811804354127,
+        "median_sec_per_frame": 0.0009188965004796046,
+        "p95_sec_per_frame": 0.0013859692498044754,
+        "executions": 1502
+      },
+      "tracker": {
+        "total_sec": 0.01827228197180375,
+        "percent_total": 0.30146740445883563,
+        "mean_sec_per_frame": 1.2165300913318077e-05,
+        "median_sec_per_frame": 8.932000127970241e-06,
+        "p95_sec_per_frame": 3.172359956806759e-05,
+        "executions": 1502
+      },
+      "video_read": {
+        "total_sec": 1.1054838309992192,
+        "percent_total": 18.238955688009572,
+        "mean_sec_per_frame": 0.0007360078768303723,
+        "median_sec_per_frame": 0.00043974250093015144,
+        "p95_sec_per_frame": 0.002119553348984482,
+        "executions": 1502
+      }
+    },
+    "pipeline_total_wall_sec": 6.09345669600043
+  },
+  "event_analysis": {},
+  "outputs": {
+    "background_png": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03/baseline/background.png",
+    "tracks_csv": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03/baseline/tracks.csv",
+    "events_csv": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03/baseline/events.csv",
+    "tracks_overlay_png": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03/baseline/tracks_overlay.png",
+    "track_clips": {},
+    "valid_region_mask_png": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03/baseline/valid_region/mask.png",
+    "valid_region_overlay_png": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03/baseline/valid_region/overlay.png",
+    "valid_region_profile_png": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_traj_smooth_case03/baseline/valid_region/profile.png"
+  },
+  "postprocess": {
+    "auto_merge_enabled": true,
+    "auto_merges_applied": [
+      {
+        "track_a": 34,
+        "track_b": 37,
+        "merged_to": 34,
+        "reason": "overlap",
+        "common_frames": 6,
+        "mean_distance": 31.040616941907416,
+        "mean_direction_cosine": 0.9111292374431492
+      },
+      {
+        "track_a": 67,
+        "track_b": 68,
+        "merged_to": 67,
+        "reason": "overlap",
+        "common_frames": 7,
+        "mean_distance": 31.554815560952395,
+        "mean_direction_cosine": 0.9140438656266128
+      }
+    ]
+  }
+}

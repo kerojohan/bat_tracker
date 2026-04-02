@@ -1,0 +1,121 @@
+{
+  "out_dir": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_iter1_case03",
+  "config": "/home/jcaparros/BORRAR/bat_tracker/config.out3_clean.yaml",
+  "rows": [
+    {
+      "case": "case_03",
+      "mode": "manual",
+      "tracks": 18,
+      "detections": 208,
+      "events_total": 18,
+      "exits": 10,
+      "enters": 1,
+      "outside": 0,
+      "inside": 7,
+      "dilate_px": null,
+      "diff_threshold": 12,
+      "min_area": 8,
+      "max_missed": 10,
+      "max_distance": 120.0
+    },
+    {
+      "case": "case_03",
+      "mode": "autotune",
+      "tracks": 16,
+      "detections": 203,
+      "events_total": 16,
+      "exits": 8,
+      "enters": 0,
+      "outside": 0,
+      "inside": 8,
+      "dilate_px": 31,
+      "diff_threshold": 14,
+      "min_area": 10,
+      "max_missed": 12,
+      "max_distance": 114.0
+    }
+  ],
+  "by_case": {
+    "case_03": {
+      "delta_exits": -2,
+      "delta_events_total": -2,
+      "delta_tracks": -2,
+      "delta_detections": -5,
+      "manual": {
+        "case": "case_03",
+        "mode": "manual",
+        "tracks": 18,
+        "detections": 208,
+        "events_total": 18,
+        "exits": 10,
+        "enters": 1,
+        "outside": 0,
+        "inside": 7,
+        "dilate_px": null,
+        "diff_threshold": 12,
+        "min_area": 8,
+        "max_missed": 10,
+        "max_distance": 120.0,
+        "mask_area_px": 66714,
+        "wall_sec": 6.4587343230014085,
+        "final_parameter_sources": null,
+        "run_dir": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_iter1_case03/case_03/manual"
+      },
+      "autotune": {
+        "case": "case_03",
+        "mode": "autotune",
+        "tracks": 16,
+        "detections": 203,
+        "events_total": 16,
+        "exits": 8,
+        "enters": 0,
+        "outside": 0,
+        "inside": 8,
+        "dilate_px": 31,
+        "diff_threshold": 14,
+        "min_area": 10,
+        "max_missed": 12,
+        "max_distance": 114.0,
+        "mask_area_px": 103990,
+        "wall_sec": 8.785211479998907,
+        "final_parameter_sources": {
+          "valid_region.mask_geometry.mode": {
+            "value": "dilate",
+            "source": "scene_auto_tune"
+          },
+          "valid_region.mask_geometry.dilate_px": {
+            "value": 31,
+            "source": "scene_auto_tune"
+          },
+          "valid_region.mask_geometry.iterations": {
+            "value": 1,
+            "source": "scene_auto_tune"
+          },
+          "valid_region.mask_geometry.clip_to_profile_mask": {
+            "value": true,
+            "source": "scene_auto_tune"
+          },
+          "detection.diff_threshold": {
+            "value": 14,
+            "source": "scene_auto_tune_override_explicit"
+          },
+          "detection.min_area": {
+            "value": 10,
+            "source": "scene_auto_tune_override_explicit"
+          },
+          "tracking.max_missed": {
+            "value": 12,
+            "source": "scene_auto_tune_override_explicit"
+          },
+          "tracking.max_distance": {
+            "value": 114.0,
+            "source": "scene_auto_tune_override_explicit"
+          }
+        },
+        "run_dir": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_iter1_case03/case_03/autotune"
+      },
+      "warnings": []
+    }
+  },
+  "errors": []
+}

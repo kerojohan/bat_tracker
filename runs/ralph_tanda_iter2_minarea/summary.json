@@ -1,0 +1,121 @@
+{
+  "out_dir": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_tanda_iter2_minarea",
+  "config": "/home/jcaparros/BORRAR/bat_tracker/config.out3_clean.yaml",
+  "rows": [
+    {
+      "case": "case_03",
+      "mode": "manual",
+      "tracks": 18,
+      "detections": 208,
+      "events_total": 18,
+      "exits": 10,
+      "enters": 1,
+      "outside": 0,
+      "inside": 7,
+      "dilate_px": null,
+      "diff_threshold": 12,
+      "min_area": 8,
+      "max_missed": 10,
+      "max_distance": 120.0
+    },
+    {
+      "case": "case_03",
+      "mode": "autotune",
+      "tracks": 16,
+      "detections": 189,
+      "events_total": 16,
+      "exits": 9,
+      "enters": 0,
+      "outside": 0,
+      "inside": 7,
+      "dilate_px": 31,
+      "diff_threshold": 17,
+      "min_area": 8,
+      "max_missed": 12,
+      "max_distance": 114.0
+    }
+  ],
+  "by_case": {
+    "case_03": {
+      "delta_exits": -1,
+      "delta_events_total": -2,
+      "delta_tracks": -2,
+      "delta_detections": -19,
+      "manual": {
+        "case": "case_03",
+        "mode": "manual",
+        "tracks": 18,
+        "detections": 208,
+        "events_total": 18,
+        "exits": 10,
+        "enters": 1,
+        "outside": 0,
+        "inside": 7,
+        "dilate_px": null,
+        "diff_threshold": 12,
+        "min_area": 8,
+        "max_missed": 10,
+        "max_distance": 120.0,
+        "mask_area_px": 66714,
+        "wall_sec": 10.215472784000667,
+        "final_parameter_sources": null,
+        "run_dir": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_tanda_iter2_minarea/case_03/manual"
+      },
+      "autotune": {
+        "case": "case_03",
+        "mode": "autotune",
+        "tracks": 16,
+        "detections": 189,
+        "events_total": 16,
+        "exits": 9,
+        "enters": 0,
+        "outside": 0,
+        "inside": 7,
+        "dilate_px": 31,
+        "diff_threshold": 17,
+        "min_area": 8,
+        "max_missed": 12,
+        "max_distance": 114.0,
+        "mask_area_px": 103990,
+        "wall_sec": 14.069415142001162,
+        "final_parameter_sources": {
+          "valid_region.mask_geometry.mode": {
+            "value": "dilate",
+            "source": "scene_auto_tune"
+          },
+          "valid_region.mask_geometry.dilate_px": {
+            "value": 31,
+            "source": "scene_auto_tune"
+          },
+          "valid_region.mask_geometry.iterations": {
+            "value": 1,
+            "source": "scene_auto_tune"
+          },
+          "valid_region.mask_geometry.clip_to_profile_mask": {
+            "value": true,
+            "source": "scene_auto_tune"
+          },
+          "detection.diff_threshold": {
+            "value": 17,
+            "source": "scene_auto_tune_override_explicit"
+          },
+          "detection.min_area": {
+            "value": 8,
+            "source": "scene_auto_tune_override_explicit"
+          },
+          "tracking.max_missed": {
+            "value": 12,
+            "source": "scene_auto_tune_override_explicit"
+          },
+          "tracking.max_distance": {
+            "value": 114.0,
+            "source": "scene_auto_tune_override_explicit"
+          }
+        },
+        "run_dir": "/home/jcaparros/BORRAR/bat_tracker/runs/ralph_tanda_iter2_minarea/case_03/autotune"
+      },
+      "warnings": []
+    }
+  },
+  "errors": []
+}
