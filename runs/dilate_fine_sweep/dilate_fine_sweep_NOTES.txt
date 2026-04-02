@@ -1,3 +1,0 @@
-Falsos positius visuals: revisar manualment tracks_overlay.png de cada px***.
-events_total i events_total_delta_vs_min_sweep serveixen com a proxy de fragmentació/ruïna.
-mask_iou_vs_ref: IoU de la màscara respecte px028 (estabilitat geomètrica).

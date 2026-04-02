@@ -1,9 +1,0 @@
-any_sample_inside_raw,direction_as_events_csv,direction_endpoint_rule,displacement_px,end_in_valid_dilated,end_in_valid_raw,frame_end,frame_span,frame_start,internal_gap_frames,is_exit_as_events_csv,not_exit_reason_primary,num_detections,overlay_category,path_length_px,relaxed_exit_outward,start_in_valid_dilated,start_in_valid_raw,track_id,x_end,x_start,y_end,y_start
-False,outside,outside,175.67,False,False,122,8,115,0,False,strict_endpoints_both_outside_never_inside_mask,8,no_exit_geometry_outside,187.12,False,True,False,6,974.0,807.0,601.5,656.0
-True,exits,exits,818.45,False,False,3787,14,3774,0,True,,14,exit,951.78,True,True,True,160,1160.5,662.5,3.5,653.0
-True,enters,enters,714.58,True,True,3916,17,3900,0,False,strict_endpoints_enters_start_outside_end_inside,21,no_exit_geometry_enters,950.49,False,False,False,195,715.0,1302.0,663.0,255.5
-False,outside,outside,26.93,True,False,4706,5,4702,0,False,strict_endpoints_both_outside_never_inside_mask,5,no_exit_geometry_outside,27.69,False,True,False,232,736.0,713.0,574.5,588.5
-True,enters,enters,715.62,True,True,4724,10,4715,0,False,strict_endpoints_enters_start_outside_end_inside,10,no_exit_geometry_enters,780.68,False,False,False,234,751.0,1134.0,626.0,21.5
-True,enters,enters,460.65,True,True,4736,20,4717,12,False,strict_endpoints_enters_start_outside_end_inside,8,no_exit_fragmentation,573.41,False,False,False,237,774.5,1065.0,642.5,285.0
-True,enters,enters,238.63,True,True,4761,7,4755,0,False,strict_endpoints_enters_start_outside_end_inside,7,no_exit_geometry_enters,243.62,False,False,False,260,741.0,966.0,662.0,582.5
-True,outside,outside,236.74,True,False,7077,26,7052,2,False,strict_endpoints_outside_but_path_crosses_valid_region,24,no_exit_geometry_cross_only,263.31,True,False,False,361,694.0,832.5,575.5,767.5

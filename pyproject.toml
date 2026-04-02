@@ -29,6 +29,7 @@ bat-mask-dilate-sweep = "bat_tracker.mask_dilate_fine_sweep:main"
 bat-scene-profile = "bat_tracker.scene_profile:main"
 bat-scene-profile-batch = "bat_tracker.scene_profile_batch:main"
 bat-pipeline-autotune-eval = "bat_tracker.pipeline_autotune_eval_batch:main"
+bat-valid-region-refine-study = "bat_tracker.valid_region_refine_study:main"
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

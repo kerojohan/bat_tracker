@@ -1,9 +1,0 @@
-track_id,direction_auto,frame_start,frame_end,x_start,y_start,x_end,y_end,start_in_mask_raw,end_in_mask_raw,displacement_dx,displacement_dy,num_points,review_image,visual_motion_estimate,auto_label_visual_ok,visual_review_notes,visual_category
-6,outside,115,122,807.0,656.0,974.0,601.5,False,False,167.0,-54.5,8,track_0006_review.png,,,,
-160,exits,3774,3787,662.5,653.0,1160.5,3.5,True,False,498.0,-649.5,14,track_0160_review.png,,,,
-195,enters,3900,3916,1302.0,255.5,715.0,663.0,False,True,-587.0,407.5,21,track_0195_review.png,,,,
-232,outside,4702,4706,713.0,588.5,736.0,574.5,False,False,23.0,-14.0,5,track_0232_review.png,,,,
-234,enters,4715,4724,1134.0,21.5,751.0,626.0,False,True,-383.0,604.5,10,track_0234_review.png,,,,
-237,enters,4717,4736,1065.0,285.0,774.5,642.5,False,True,-290.5,357.5,8,track_0237_review.png,,,,
-260,enters,4755,4761,966.0,582.5,741.0,662.0,False,True,-225.0,79.5,7,track_0260_review.png,,,,
-361,exits,7052,7077,832.5,767.5,694.0,575.5,False,False,-138.5,-192.0,24,track_0361_review.png,,,,

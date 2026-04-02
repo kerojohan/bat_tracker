@@ -1,6 +1,0 @@
-dilate_px,ok,exits,events_total,events_total_delta_vs_min_sweep,track_6_present,track_6_direction,track_232_present,track_232_direction,mask_area_px,mask_iou_vs_ref
-20,True,2,10,0,True,outside,True,outside,80820,0.9014
-24,True,4,11,1,True,exits,True,exits,85246,0.9508
-28,True,4,12,2,True,exits,True,exits,89658,1.0
-32,True,4,12,2,True,exits,True,inside,94174,0.952
-36,True,4,13,3,True,exits,True,inside,98679,0.9086

@@ -62,6 +62,24 @@ valid_region:
   bottom_contour_regularization_mix: 0.90
   bottom_contour_deepest_strong_ratio: 0.62
   output_subdir: valid_region
+  contour_refine:
+    enabled: true            # set true to activate gradient-snap refinement
+    method: gradient_snap
+    roi_expand_px: 200        # ROI = base mask dilated by this many px (safety limit)
+    edge_source: combined     # 'image' | 'depth' | 'combined'
+    image_gradient_weight: 1.0
+    depth_gradient_weight: 1.0
+    smoothness_weight: 0.8    # DP transition penalty (smoothness of snapped edge)
+    max_snap_px: 20           # max displacement per edge point (post-expansion fine-tune)
+    regularization_weight: 0.6  # mix: 0=pure grad snap, 1=pure smoothed path
+    smooth_window: 35         # moving-average window after DP
+    intensity_expansion_enabled: true  # expand mask to full dark opening before gradient snap
+    expansion_blur_kernel: 21          # sharper depth map for expansion (0=use pipeline blur)
+    expansion_intensity_ratio: 0.18    # 0=strict (deepest only), 1=loose (includes rock)
+    expansion_close_px: 11             # morphological closing to bridge gaps
+    gradient_barrier_enabled: true     # stop expansion at strong gradient edges
+    gradient_barrier_percentile: 65.0  # gradient percentile for barrier threshold
+    gradient_barrier_close_px: 11      # closing to make barrier continuous
 
 scene_auto_tune:
   enabled: true

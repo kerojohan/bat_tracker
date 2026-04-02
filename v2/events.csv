@@ -1,2 +1,0 @@
-video_id,track_id,time_start_sec,time_end_sec,duration_sec,frame_start,frame_end,num_detections,x_start,y_start,x_end,y_end,displacement_px,path_length_px,straightness,mean_speed_px_sec,mean_area,start_in_valid_region,end_in_valid_region,direction
-retallat,16,125.9,126.1,0.2,3777,3783,6,787.0,650.5,1001.5,479.0,274.63,288.44,0.9521,1442.21,245.67,False,False,outside

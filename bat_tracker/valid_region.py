@@ -8,6 +8,8 @@ from typing import Dict, Tuple
 import cv2
 import numpy as np
 
+from .valid_region_contour_refine import apply_contour_refine, save_refine_artifacts
+
 
 def _ensure_odd(value: int, field_name: str) -> int:
     ivalue = int(value)
@@ -677,6 +679,9 @@ def run_valid_region(
         depth_map = 255.0 - illumination.astype(np.float32)
         mask = _snap_lower_contour_to_depth_gradient(mask, depth_map, config)
         mask = _apply_mask_geometry(mask, depth_map, None, config)
+        refine_cfg = config.get("contour_refine") if isinstance(config.get("contour_refine"), dict) else {}
+        base_mask_for_artifacts = mask.copy()
+        mask, refine_metrics, _expanded = apply_contour_refine(mask, image, depth_map, refine_cfg)
         x_start, x_end = _bbox_from_mask(mask)
         _save_depth_debug_outputs(
             original_image=image,
@@ -684,6 +689,12 @@ def run_valid_region(
             mask=mask,
             output_dir=output_dir,
         )
+        if refine_cfg.get("enabled"):
+            from .valid_region_contour_refine import compute_combined_gradient
+            img_w = float(refine_cfg.get("image_gradient_weight", 1.0))
+            dep_w = float(refine_cfg.get("depth_gradient_weight", 1.0))
+            grad = compute_combined_gradient(image, depth_map, img_w, dep_w)
+            save_refine_artifacts(base_mask_for_artifacts, mask, image, depth_map, grad, Path(output_dir))
         mg = config.get("mask_geometry") if isinstance(config.get("mask_geometry"), dict) else {}
         return {
             "enabled": True,
@@ -692,6 +703,8 @@ def run_valid_region(
             "width": int(max(1, x_end - x_start + 1)),
             "method": "central_deep_layer",
             "mask_geometry_mode": str(mg.get("mode", "baseline")),
+            "contour_refine_enabled": bool(refine_cfg.get("enabled", False)),
+            "contour_refine_metrics": refine_metrics,
             "output_dir": str(Path(output_dir).resolve()),
         }
 
@@ -710,6 +723,9 @@ def run_valid_region(
         depth_map = 255.0 - illumination.astype(np.float32)
         mask = _snap_lower_contour_to_depth_gradient(mask, depth_map, config)
         mask = _apply_mask_geometry(mask, depth_map, profile_mask, config)
+        refine_cfg = config.get("contour_refine") if isinstance(config.get("contour_refine"), dict) else {}
+        base_mask_for_artifacts = mask.copy()
+        mask, refine_metrics, _expanded = apply_contour_refine(mask, image, depth_map, refine_cfg)
         x_start, x_end = _bbox_from_mask(mask)
         _save_depth_debug_outputs(
             original_image=image,
@@ -717,6 +733,12 @@ def run_valid_region(
             mask=mask,
             output_dir=output_dir,
         )
+        if refine_cfg.get("enabled"):
+            from .valid_region_contour_refine import compute_combined_gradient
+            img_w = float(refine_cfg.get("image_gradient_weight", 1.0))
+            dep_w = float(refine_cfg.get("depth_gradient_weight", 1.0))
+            grad = compute_combined_gradient(image, depth_map, img_w, dep_w)
+            save_refine_artifacts(base_mask_for_artifacts, mask, image, depth_map, grad, Path(output_dir))
         mg = config.get("mask_geometry") if isinstance(config.get("mask_geometry"), dict) else {}
         return {
             "enabled": True,
@@ -726,6 +748,8 @@ def run_valid_region(
             "method": "hybrid_deep_layer_profile",
             "hybrid_combine_mode": combine_mode.lower(),
             "mask_geometry_mode": str(mg.get("mode", "baseline")),
+            "contour_refine_enabled": bool(refine_cfg.get("enabled", False)),
+            "contour_refine_metrics": refine_metrics,
             "output_dir": str(Path(output_dir).resolve()),
         }
 
