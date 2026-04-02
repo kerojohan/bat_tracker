@@ -290,6 +290,16 @@ def _point_in_mask(point: TrackPoint, mask: np.ndarray) -> bool:
     return bool(mask[yi, xi] > 0)
 
 
+def _build_valid_region_gate_mask(valid_mask: np.ndarray | None, tracking_cfg: Dict) -> np.ndarray | None:
+    gate_mask = valid_mask
+    valid_region_gate_dilate_px = max(0, int(tracking_cfg.get("valid_region_gate_dilate_px", 0)))
+    if gate_mask is not None and valid_region_gate_dilate_px > 0:
+        k = 2 * valid_region_gate_dilate_px + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        gate_mask = cv2.dilate(gate_mask, kernel, iterations=1)
+    return gate_mask
+
+
 def _filter_track_points(
     points: List[TrackPoint],
     tracking_cfg: Dict,
@@ -304,13 +314,7 @@ def _filter_track_points(
     min_track_path_length = float(tracking_cfg.get("min_track_path_length", 0.0))
     min_track_straightness = float(tracking_cfg.get("min_track_straightness", 0.0))
     require_start_or_end_in_valid_region = bool(tracking_cfg.get("require_start_or_end_in_valid_region", False))
-    valid_region_gate_dilate_px = max(0, int(tracking_cfg.get("valid_region_gate_dilate_px", 0)))
-
-    gate_mask = valid_mask
-    if gate_mask is not None and valid_region_gate_dilate_px > 0:
-        k = 2 * valid_region_gate_dilate_px + 1
-        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
-        gate_mask = cv2.dilate(gate_mask, kernel, iterations=1)
+    gate_mask = _build_valid_region_gate_mask(valid_mask, tracking_cfg)
 
     by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
     for point in points:
@@ -735,7 +739,8 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
 
     events_csv_path = out_dir / "events.csv"
     points_for_events = smoothed_points if smoothed_points is not None else filtered_points
-    _write_events_csv(events_csv_path, points_for_events, valid_mask)
+    valid_mask_for_events = _build_valid_region_gate_mask(valid_mask, cfg["tracking"])
+    _write_events_csv(events_csv_path, points_for_events, valid_mask_for_events)
 
     overlay_line_t = int(cfg["output"]["overlay_line_thickness"])
     overlay_start_r = int(cfg["output"]["overlay_start_radius"])
