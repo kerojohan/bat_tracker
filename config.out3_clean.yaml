@@ -75,6 +75,6 @@ output:
   overlay_draw_track_labels_at_end: true
   overlay_label_font_scale: 0.5
   overlay_label_thickness: 1
-  export_track_clips: true
+  export_track_clips: false
   track_clips_subdir: track_clips
   track_clips_padding_frames: 5
