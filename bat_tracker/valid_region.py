@@ -26,6 +26,11 @@ def load_image(path: str | Path) -> np.ndarray:
     return image
 
 
+def load_mask(path: str | Path) -> np.ndarray:
+    mask = load_image(path)
+    return np.where(mask > 0, 255, 0).astype(np.uint8)
+
+
 def estimate_illumination(image: np.ndarray, blur_kernel_size: int) -> np.ndarray:
     k = _ensure_odd(blur_kernel_size, "blur_kernel_size")
     return cv2.GaussianBlur(image, (k, k), 0)
@@ -225,6 +230,40 @@ def _bbox_from_mask(mask: np.ndarray) -> Tuple[int, int]:
     if xs.size == 0:
         return 0, max(1, mask.shape[1] - 1)
     return int(xs.min()), int(xs.max())
+
+
+def save_precomputed_mask_outputs(
+    original_image: np.ndarray,
+    mask: np.ndarray,
+    output_dir: str | Path,
+) -> Tuple[int, int]:
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    x_start, x_end = _bbox_from_mask(mask)
+    cv2.imwrite(str(out_dir / "mask.png"), mask)
+
+    overlay = cv2.cvtColor(original_image, cv2.COLOR_GRAY2BGR)
+    tint = np.zeros_like(overlay)
+    tint[mask > 0] = (0, 255, 0)
+    overlay = cv2.addWeighted(overlay, 0.82, tint, 0.42, 0)
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay, contours, -1, (0, 255, 255), 2, lineType=cv2.LINE_AA)
+    cv2.imwrite(str(out_dir / "overlay.png"), overlay)
+
+    profile_vis = cv2.cvtColor(mask, cv2.COLOR_GRAY2BGR)
+    cv2.putText(
+        profile_vis,
+        "precomputed mask",
+        (20, 40),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        1.0,
+        (0, 255, 255),
+        2,
+        lineType=cv2.LINE_AA,
+    )
+    cv2.imwrite(str(out_dir / "profile.png"), profile_vis)
+    return x_start, x_end
 
 
 def _central_deep_layer_mask(

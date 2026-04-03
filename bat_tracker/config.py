@@ -14,6 +14,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "background": {
         "sample_frames": 200,
         "uniform_sampling": True,
+        "input_image": "",
+        "context_start_sec": 0.0,
+        "context_duration_sec": -1.0,
     },
     "detection": {
         "blur_kernel": 5,
@@ -59,6 +62,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "apply_to_detection": True,
         "hybrid_combine_mode": "and",
         "input_image": "",
+        "input_mask": "",
+        "context_start_sec": -1.0,
+        "context_duration_sec": -1.0,
         "blur_kernel_size": 151,
         "profile_smooth_window": 31,
         "threshold_ratio": 0.45,
@@ -156,6 +162,31 @@ def _validate_config(cfg: Dict[str, Any]) -> None:
     valid_region = cfg.get("valid_region", {})
     if not isinstance(valid_region, dict):
         raise ValueError("valid_region config must be a mapping/dictionary")
+
+    background = cfg.get("background", {})
+    if not isinstance(background, dict):
+        raise ValueError("background config must be a mapping/dictionary")
+    context_start_sec = float(background.get("context_start_sec", 0.0))
+    context_duration_sec = float(background.get("context_duration_sec", -1.0))
+    if context_start_sec < 0.0:
+        raise ValueError(f"background.context_start_sec must be >= 0, got: {context_start_sec}")
+    if context_duration_sec == 0.0 or context_duration_sec < -1.0:
+        raise ValueError(
+            "background.context_duration_sec must be > 0 or -1 to use the whole video, "
+            f"got: {context_duration_sec}"
+        )
+
+    valid_context_start_sec = float(valid_region.get("context_start_sec", -1.0))
+    valid_context_duration_sec = float(valid_region.get("context_duration_sec", -1.0))
+    if valid_context_start_sec < -1.0:
+        raise ValueError(
+            f"valid_region.context_start_sec must be >= 0 or -1 to inherit background context, got: {valid_context_start_sec}"
+        )
+    if valid_context_duration_sec == 0.0 or valid_context_duration_sec < -1.0:
+        raise ValueError(
+            "valid_region.context_duration_sec must be > 0 or -1 to inherit/use whole source, "
+            f"got: {valid_context_duration_sec}"
+        )
 
     for field in ("blur_kernel_size", "profile_smooth_window"):
         value = int(valid_region.get(field, 0))

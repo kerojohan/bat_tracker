@@ -1,6 +1,8 @@
 background:
   sample_frames: 120
   uniform_sampling: true
+  context_start_sec: 0.0
+  context_duration_sec: -1.0
 
 detection:
   blur_kernel: 9
@@ -38,12 +40,14 @@ tracking:
   merge_overlap_max_mean_distance: 60.0
   merge_overlap_min_direction_cosine: 0.8
   require_start_or_end_in_valid_region: true
-  valid_region_gate_dilate_px: 80
+  valid_region_gate_dilate_px: 20
 
 valid_region:
   enabled: true
   method: hybrid_deep_layer_profile
   apply_to_detection: false
+  context_start_sec: 0.0
+  context_duration_sec: 75.0
   hybrid_combine_mode: and
   blur_kernel_size: 151
   depth_percentile: 85.0

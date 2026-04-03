@@ -10,15 +10,25 @@ from .video import frame_to_gray
 from .video import open_video_capture
 
 
-def _sample_indices(frame_count: int, sample_frames: int, uniform: bool) -> np.ndarray:
+def _sample_indices(
+    frame_count: int,
+    sample_frames: int,
+    uniform: bool,
+    *,
+    start_frame: int = 0,
+    end_frame: int | None = None,
+) -> np.ndarray:
     if frame_count <= 0:
         return np.array([], dtype=np.int32)
 
-    sample_frames = max(1, min(sample_frames, frame_count))
+    start = max(0, min(int(start_frame), frame_count - 1))
+    end = frame_count - 1 if end_frame is None else max(start, min(int(end_frame), frame_count - 1))
+    available = end - start + 1
+    sample_frames = max(1, min(sample_frames, available))
     if uniform:
-        return np.linspace(0, frame_count - 1, sample_frames).astype(np.int32)
+        return np.linspace(start, end, sample_frames).astype(np.int32)
 
-    return np.arange(sample_frames, dtype=np.int32)
+    return np.arange(start, start + sample_frames, dtype=np.int32)
 
 
 def compute_background_median(
@@ -30,8 +40,16 @@ def compute_background_median(
     compute_device: str = "cpu",
     strict_parity: bool = True,
     runtime_stats: dict | None = None,
+    context_start_frame: int = 0,
+    context_end_frame: int | None = None,
 ) -> np.ndarray:
-    indices = _sample_indices(meta.frame_count, sample_frames, uniform_sampling)
+    indices = _sample_indices(
+        meta.frame_count,
+        sample_frames,
+        uniform_sampling,
+        start_frame=context_start_frame,
+        end_frame=context_end_frame,
+    )
     if indices.size == 0:
         raise RuntimeError("Video has zero frames")
 

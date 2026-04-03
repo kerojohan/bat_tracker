@@ -25,7 +25,9 @@ from .render import render_tracks_overlay
 from .track_smoothing import smooth_track_points
 from .tracker import GreedyTracker, TrackPoint
 from .valid_region import load_image as load_valid_region_image
+from .valid_region import load_mask as load_valid_region_mask
 from .valid_region import run_valid_region
+from .valid_region import save_precomputed_mask_outputs
 from .video import iter_gray_frames, read_video_meta
 
 # Two OpenCV worker threads gave the best real pipeline wall time on the
@@ -33,6 +35,41 @@ from .video import iter_gray_frames, read_video_meta
 # but regressed end-to-end throughput due to contention and oversubscription.
 OPENCV_CPU_THREADS = 2
 cv2.setNumThreads(OPENCV_CPU_THREADS)
+
+
+def _background_context_bounds(meta, background_cfg: Dict) -> tuple[int, int | None]:
+    start_sec = float(background_cfg.get("context_start_sec", 0.0))
+    duration_sec = float(background_cfg.get("context_duration_sec", -1.0))
+    fps = max(1e-6, float(meta.fps))
+
+    start_frame = max(0, int(round(start_sec * fps)))
+    if duration_sec < 0.0:
+        return start_frame, None
+
+    duration_frames = max(1, int(round(duration_sec * fps)))
+    end_frame = start_frame + duration_frames - 1
+    return start_frame, end_frame
+
+
+def _valid_region_context_bounds(meta, valid_region_cfg: Dict, background_cfg: Dict) -> tuple[int, int | None]:
+    start_sec = float(valid_region_cfg.get("context_start_sec", -1.0))
+    duration_sec = float(valid_region_cfg.get("context_duration_sec", -1.0))
+    if start_sec < 0.0 and duration_sec < 0.0:
+        return _background_context_bounds(meta, background_cfg)
+
+    if start_sec < 0.0:
+        start_sec = float(background_cfg.get("context_start_sec", 0.0))
+    if duration_sec < 0.0:
+        duration_sec = float(background_cfg.get("context_duration_sec", -1.0))
+
+    fps = max(1e-6, float(meta.fps))
+    start_frame = max(0, int(round(start_sec * fps)))
+    if duration_sec < 0.0:
+        return start_frame, None
+
+    duration_frames = max(1, int(round(duration_sec * fps)))
+    end_frame = start_frame + duration_frames - 1
+    return start_frame, end_frame
 
 
 CSV_COLUMNS = [
@@ -298,6 +335,20 @@ def _build_valid_region_gate_mask(valid_mask: np.ndarray | None, tracking_cfg: D
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
         gate_mask = cv2.dilate(gate_mask, kernel, iterations=1)
     return gate_mask
+
+
+def _save_valid_region_gate_overlay(
+    background_gray: np.ndarray,
+    gate_mask: np.ndarray,
+    output_path: Path,
+) -> None:
+    overlay = cv2.cvtColor(background_gray, cv2.COLOR_GRAY2BGR)
+    tint = np.zeros_like(overlay)
+    tint[gate_mask > 0] = (255, 140, 0)
+    overlay = cv2.addWeighted(overlay, 0.82, tint, 0.30, 0)
+    contours, _ = cv2.findContours(gate_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay, contours, -1, (0, 165, 255), 2, lineType=cv2.LINE_AA)
+    cv2.imwrite(str(output_path), overlay)
 
 
 def _filter_track_points(
@@ -626,48 +677,99 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     )
 
     progress.start_stage("background")
-    background = compute_background_median(
-        video_path=input_video,
-        meta=meta,
-        sample_frames=int(cfg["background"]["sample_frames"]),
-        uniform_sampling=bool(cfg["background"]["uniform_sampling"]),
-        compute_device=execution_plan.selected_device,
-        strict_parity=strict_parity,
-        runtime_stats=background_runtime_stats,
-    )
+    background_input = str(cfg["background"].get("input_image", "")).strip()
+    background_source = "computed"
+    background_context_start, background_context_end = _background_context_bounds(meta, cfg["background"])
+    if background_input:
+        background = load_valid_region_image(background_input)
+        background_source = "input_image"
+        if background.shape[:2] != (meta.height, meta.width):
+            raise ValueError(
+                "background.input_image shape does not match the input video: "
+                f"expected {(meta.height, meta.width)}, got {background.shape[:2]}"
+            )
+    else:
+        background = compute_background_median(
+            video_path=input_video,
+            meta=meta,
+            sample_frames=int(cfg["background"]["sample_frames"]),
+            uniform_sampling=bool(cfg["background"]["uniform_sampling"]),
+            compute_device=execution_plan.selected_device,
+            strict_parity=strict_parity,
+            runtime_stats=background_runtime_stats,
+            context_start_frame=background_context_start,
+            context_end_frame=background_context_end,
+        )
     background_path = out_dir / "background.png"
     cv2.imwrite(str(background_path), background)
     progress.complete_stage("background", detail="background ready")
     valid_mask: np.ndarray | None = None
     valid_mask_for_detection: np.ndarray | None = None
+    valid_gate_mask: np.ndarray | None = None
     valid_region_meta: Dict = {"enabled": False}
     valid_region_outputs: Dict[str, str] = {}
 
     if valid_region_enabled:
         progress.start_stage("valid_region")
-        valid_input = str(valid_region_cfg.get("input_image", "")).strip()
-        if valid_input:
-            valid_image = load_valid_region_image(valid_input)
-        else:
-            valid_image = background
-
         valid_subdir = str(valid_region_cfg.get("output_subdir", "valid_region"))
         valid_output_dir = out_dir / valid_subdir
-        valid_region_meta = run_valid_region(
-            image=valid_image,
-            output_dir=valid_output_dir,
-            config=valid_region_cfg,
-        )
         mask_path = valid_output_dir / "mask.png"
-        valid_mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-        if valid_mask is None:
-            raise RuntimeError(f"Could not load valid-region mask from: {mask_path}")
+        valid_mask_input = str(valid_region_cfg.get("input_mask", "")).strip()
+        if valid_mask_input:
+            valid_mask = load_valid_region_mask(valid_mask_input)
+            if valid_mask.shape[:2] != background.shape[:2]:
+                raise ValueError(
+                    "valid_region.input_mask shape does not match the processing frame size: "
+                    f"expected {background.shape[:2]}, got {valid_mask.shape[:2]}"
+                )
+            x_start, x_end = save_precomputed_mask_outputs(background, valid_mask, valid_output_dir)
+            valid_region_meta = {
+                "enabled": True,
+                "x_start": int(x_start),
+                "x_end": int(x_end),
+                "width": int(max(1, x_end - x_start + 1)),
+                "method": "input_mask",
+                "input_mask": str(Path(valid_mask_input).resolve()),
+                "output_dir": str(valid_output_dir.resolve()),
+            }
+        else:
+            valid_input = str(valid_region_cfg.get("input_image", "")).strip()
+            if valid_input:
+                valid_image = load_valid_region_image(valid_input)
+            else:
+                vr_context_start, vr_context_end = _valid_region_context_bounds(meta, valid_region_cfg, cfg["background"])
+                if vr_context_start == background_context_start and vr_context_end == background_context_end:
+                    valid_image = background
+                else:
+                    valid_image = compute_background_median(
+                        video_path=input_video,
+                        meta=meta,
+                        sample_frames=int(cfg["background"]["sample_frames"]),
+                        uniform_sampling=bool(cfg["background"]["uniform_sampling"]),
+                        compute_device=execution_plan.selected_device,
+                        strict_parity=strict_parity,
+                        context_start_frame=vr_context_start,
+                        context_end_frame=vr_context_end,
+                    )
+            valid_region_meta = run_valid_region(
+                image=valid_image,
+                output_dir=valid_output_dir,
+                config=valid_region_cfg,
+            )
+            valid_mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+            if valid_mask is None:
+                raise RuntimeError(f"Could not load valid-region mask from: {mask_path}")
         if bool(valid_region_cfg.get("apply_to_detection", True)):
             valid_mask_for_detection = valid_mask
+        valid_gate_mask = _build_valid_region_gate_mask(valid_mask, cfg["tracking"])
+        if valid_gate_mask is not None:
+            gate_overlay_path = valid_output_dir / "gate_overlay.png"
+            _save_valid_region_gate_overlay(background, valid_gate_mask, gate_overlay_path)
         valid_region_outputs = {
             "valid_region_mask_png": str(mask_path.resolve()),
             "valid_region_overlay_png": str((valid_output_dir / "overlay.png").resolve()),
             "valid_region_profile_png": str((valid_output_dir / "profile.png").resolve()),
+            "valid_region_gate_overlay_png": str((valid_output_dir / "gate_overlay.png").resolve()),
         }
         progress.complete_stage("valid_region", detail="valid region ready")
 
@@ -739,8 +841,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
 
     events_csv_path = out_dir / "events.csv"
     points_for_events = smoothed_points if smoothed_points is not None else filtered_points
-    valid_mask_for_events = _build_valid_region_gate_mask(valid_mask, cfg["tracking"])
-    _write_events_csv(events_csv_path, points_for_events, valid_mask_for_events)
+    _write_events_csv(events_csv_path, points_for_events, valid_gate_mask)
 
     overlay_line_t = int(cfg["output"]["overlay_line_thickness"])
     overlay_start_r = int(cfg["output"]["overlay_start_radius"])
@@ -832,6 +933,12 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "height": meta.height,
         },
         "parameters": cfg,
+        "background": {
+            "source": background_source,
+            "input_image": str(Path(background_input).resolve()) if background_input else "",
+            "context_start_sec": float(cfg["background"].get("context_start_sec", 0.0)),
+            "context_duration_sec": float(cfg["background"].get("context_duration_sec", -1.0)),
+        },
         "valid_region": valid_region_meta,
         "metrics": {
             **_build_metrics(filtered_points, frame_processed),

@@ -80,6 +80,7 @@ Se escriben en la carpeta indicada por `--output`:
 - `background.png`: fondo estimado por mediana temporal.
 - `valid_region/mask.png`: mascara binaria vertical (255 zona valida, 0 laterales invalidos).
 - `valid_region/overlay.png`: debug visual de banda valida sobre la imagen.
+- `valid_region/gate_overlay.png`: debug visual del gate real usado en tracking tras aplicar `valid_region_gate_dilate_px`.
 - `valid_region/profile.png`: debug de region valida (perfil horizontal en modo `horizontal_illumination_profile`; mapa de profundidad en modos `central_deep_layer`/`hybrid_deep_layer_profile`).
 - `tracks.csv`: trayectorias 2D por deteccion y frame.
 - `tracks_overlay.png`: trayectorias dibujadas sobre `background.png`.
@@ -112,6 +113,9 @@ Usa `config.yaml.example` como base.
 
 - `background.sample_frames`: numero de frames para mediana temporal
 - `background.uniform_sampling`: muestreo uniforme en todo el video
+- `background.input_image`: si se define, reutiliza un fondo precomputado y omite la mediana temporal
+- `background.context_start_sec`: segundo inicial de la ventana usada para estimar `background.png`
+- `background.context_duration_sec`: duracion de esa ventana; `-1` usa el video entero
 - `detection.*`: parametros de blur, threshold, morfologia y area
   - `detection.threshold_mode`: `fixed` o `otsu`
   - `detection.otsu_offset`: ajuste fino sobre umbral Otsu (negativo = mas sensible)
@@ -143,6 +147,8 @@ Usa `config.yaml.example` como base.
   - `valid_region.apply_to_detection`: aplica mascara en deteccion por frame (si no, se usa solo para filtros de track)
   - `valid_region.hybrid_combine_mode`: `and`/`or` para combinar capa de profundidad + umbral por perfil
   - `valid_region.input_image`: si se define, usa esta imagen en vez de `background.png`
+  - `valid_region.input_mask`: si se define, reutiliza exactamente esta mascara y omite su estimacion
+  - `valid_region.context_start_sec` y `valid_region.context_duration_sec`: permiten estimar la mascara con una ventana temporal distinta a la del fondo de deteccion
   - `valid_region.blur_kernel_size` y `valid_region.profile_smooth_window`: deben ser impares
   - `valid_region.threshold_ratio`: fraccion del pico del perfil para definir region valida
   - `valid_region.safety_margin`: recorte adicional en pixeles por lado
