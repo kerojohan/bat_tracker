@@ -3,8 +3,11 @@
 Proyecto Python para Linux orientado a CPU (con opcion CUDA cuando esta disponible) que procesa videos IR monocromos de cueva y genera:
 
 - `background.png`: fondo por mediana temporal
-- `valid_region/`: mascara vertical de zona valida por iluminacion horizontal
+- `valid_region/`: mascara vertical de zona valida estimada por perfil de iluminacion o profundidad
 - `tracks.csv`: trayectorias 2D por objeto
+- `events.csv`: resumen por track con direccion, duracion, desplazamiento y estadisticas
+- `tracks.svg`: artefacto vectorial autocontenido con las trayectorias 2D en coordenadas originales
+- `tracks_render.json`: geometria normalizada por track para consumo externo
 - `tracks_overlay.png`: trayectorias sobre el fondo
 - `meta.json`: parametros y metricas de ejecucion
 
@@ -35,18 +38,24 @@ O sin `--config` para usar defaults.
 Tambien puede ejecutarse sin instalar entrypoint:
 
 ```bash
-python -m bat_tracker.cli --input /path/video.mp4 --output /path/out_dir --config /path/config.yaml
+python -m bat_tracker --input /path/video.mp4 --output /path/out_dir --config /path/config.yaml
 ```
 
 Generacion standalone de mascara vertical valida:
 
 ```bash
-python -m bat_tracker.valid_region \
+bat-valid-region \
   --input /path/out_dir/background.png \
   --output /path/out_dir/valid_region \
   --blur-kernel-size 151 \
   --threshold-ratio 0.45 \
   --safety-margin 10
+```
+
+Alternativamente:
+
+```bash
+python -m bat_tracker.valid_region --input /path/out_dir/background.png --output /path/out_dir/valid_region
 ```
 
 ## Ejemplo de Resultados
@@ -71,7 +80,6 @@ Ejemplos de configuracion incluidos:
 
 - `config.yaml.example` (base)
 - `config.out3_clean.yaml` (perfil limpio para escenas tipo out3 con menos ruido)
-- `config.universal.yaml` (perfil general para escenas variadas)
 
 ## Salidas
 
@@ -83,16 +91,29 @@ Se escriben en la carpeta indicada por `--output`:
 - `valid_region/gate_overlay.png`: debug visual del gate real usado en tracking tras aplicar `valid_region_gate_dilate_px`.
 - `valid_region/profile.png`: debug de region valida (perfil horizontal en modo `horizontal_illumination_profile`; mapa de profundidad en modos `central_deep_layer`/`hybrid_deep_layer_profile`).
 - `tracks.csv`: trayectorias 2D por deteccion y frame.
+- `events.csv`: resumen por track con inicio/fin, duracion, desplazamiento, recorrido, straightness y direccion.
+- `tracks.svg`: export vectorial autocontenido de todas las trayectorias en el sistema de coordenadas original del video, con el mismo color por `track_id` y las mismas etiquetas opcionales que `tracks_overlay.png`.
+- `tracks_render.json`: export JSON con `width`, `height`, puntos por track y metadatos minimos (`track_id`, `frame_start`, `frame_end`, `duration_sec`, `direction`, `point_start`, `point_end`).
+  - `direction` usa el vocabulario `entry`, `exit`, `inside`, `outside`, `unknown`.
 - `tracks_overlay.png`: trayectorias dibujadas sobre `background.png`.
+- `tracks_overlay_raw.png` y `tracks_overlay_smoothed.png` (opcionales): overlays adicionales cuando `output.trajectory_smoothing_enabled` esta activo.
 - `track_clips/` (opcional): clips de video por track (`track_0001_000120-000186.mp4`, etc.).
 - `meta.json`: metadatos del video, parametros efectivos y metricas de ejecucion.
-  - incluye bloque `valid_region` con `x_start`, `x_end`, `width` y `method`.
+  - incluye bloques `video`, `parameters`, `background`, `valid_region`, `metrics`, `execution`, `performance`, `outputs`, `trajectory_smoothing` y `postprocess`.
 
 ## Formato de tracks.csv
 
 Columnas exactas:
 
 `video_id,track_id,frame,time_sec,x,y,vx,vy,bbox_x1,bbox_y1,bbox_x2,bbox_y2,area`
+
+## Formato de events.csv
+
+Columnas exactas:
+
+`video_id,track_id,time_start_sec,time_end_sec,duration_sec,frame_start,frame_end,num_detections,x_start,y_start,x_end,y_end,displacement_px,path_length_px,straightness,mean_speed_px_sec,mean_area,start_in_valid_region,end_in_valid_region,direction`
+
+`direction` usa el vocabulario `entry`, `exit`, `inside`, `outside`, `unknown`.
 
 ## Pipeline implementado
 
@@ -102,10 +123,11 @@ Columnas exactas:
 4. Umbral binario (fijo u Otsu) + morfologia (open/close) + contornos.
 5. Filtrado de blobs por area minima/maxima.
 6. Tracking 2D frame a frame con asignacion greedy por distancia maxima y prediccion por velocidad para reducir cortes.
-7. Export de `tracks.csv` y render final `tracks_overlay.png` (color por track, primer punto mas grande).
+7. Export de `tracks.csv`, `events.csv`, `tracks.svg`, `tracks_render.json` y render final `tracks_overlay.png` a partir de la misma geometria en memoria (mismo color por track, primer punto mas grande y mismas etiquetas opcionales en PNG/SVG).
 8. Si `valid_region.enabled`, calculo de banda vertical valida desde iluminacion horizontal y guardado en `valid_region/*`.
 9. Export de `meta.json` con parametros, metadatos y metricas.
    - incluye `postprocess.auto_merges_applied` cuando `tracking.auto_merge_suggested` esta activo.
+   - incluye `trajectory_smoothing.enabled/window` y rutas extra de overlay cuando el suavizado esta activado.
 
 ## Configuracion
 
@@ -156,15 +178,20 @@ Usa `config.yaml.example` como base.
   - `valid_region.depth_percentile/depth_morph_kernel/depth_min_area_ratio`: parametros del modo `central_deep_layer`
   - `valid_region.depth_layer_percentiles` + `valid_region.depth_layer_dilate_px`: expansion no uniforme por capas de profundidad (listas emparejadas)
   - `valid_region.bottom_contour_*`: refinado opcional del borde inferior ajustandolo al gradiente vertical de profundidad (`*_search_*` define ventana de busqueda, `*_smooth_window` suaviza la curva, `*_gradient_quantile` controla sensibilidad, `*_regularization`/`*_max_step_px` reducen muescas, `*_downward_bias` permite bajar cuando hay empate, `*_regularization_mix` mezcla ajuste local/global, `*_deepest_strong_ratio` favorece el borde fuerte mas profundo frente a crestas intermedias)
-- `output.*`: estilo del overlay
-  - `output.overlay_draw_track_labels`: dibuja el numero de `track_id` junto al inicio de cada track
-  - `output.overlay_draw_track_labels_at_end`: dibuja el numero de `track_id` al final del track
-  - `output.overlay_label_font_scale` y `output.overlay_label_thickness`: estilo de etiqueta
+- `output.*`: estilo del overlay y artefactos de salida
+  - `output.overlay_line_thickness`: grosor de linea en `tracks_overlay.png` y `tracks.svg`
+  - `output.overlay_start_radius`: radio del marcador del primer punto del track
+  - `output.overlay_alpha`: alpha del overlay raster `tracks_overlay.png`
+  - `output.overlay_draw_track_labels`: dibuja el numero de `track_id` junto al inicio de cada track en `tracks_overlay.png` y `tracks.svg`
+  - `output.overlay_draw_track_labels_at_end`: dibuja el numero de `track_id` al final del track en `tracks_overlay.png` y `tracks.svg`
+  - `output.overlay_label_font_scale` y `output.overlay_label_thickness`: estilo de etiqueta compartido por `tracks_overlay.png` y `tracks.svg`
   - `output.progress_enabled`: muestra trazas de avance global por consola durante todo el pipeline (etapas + frames)
   - `output.progress_step_percent`: porcentaje global entre trazas (1..100, por defecto `5`)
   - `output.export_track_clips`: exporta clips por track en una carpeta
   - `output.track_clips_subdir`: nombre de la carpeta de clips dentro del output
   - `output.track_clips_padding_frames`: frames extra antes/despues del rango del track
+  - `output.trajectory_smoothing_enabled`: genera una version suavizada de las trayectorias para overlays y `events.csv`
+  - `output.trajectory_smoothing_window`: ventana impar >= 3 usada en el suavizado
 - `execution.*`: seleccion de backend de computo
   - `execution.device`: `auto` (default), `cpu` o `cuda`
   - `execution.strict_parity`: cuando esta en `true`, compara mascara CPU/GPU y conserva la salida CPU para mantener resultados equivalentes al pipeline original

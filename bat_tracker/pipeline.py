@@ -21,7 +21,7 @@ from .config import load_config
 from .detection import build_detection_context
 from .detection import detect_foreground_blobs
 from .perf import PerformanceCollector
-from .render import render_tracks_overlay
+from .render import export_tracks_render_json, export_tracks_svg, render_tracks_overlay
 from .track_smoothing import smooth_track_points
 from .tracker import GreedyTracker, TrackPoint
 from .valid_region import load_image as load_valid_region_image
@@ -116,9 +116,9 @@ def _classify_direction(start_inside: bool, end_inside: bool) -> str:
     if start_inside and end_inside:
         return "inside"
     if start_inside and not end_inside:
-        return "exits"
+        return "exit"
     if not start_inside and end_inside:
-        return "enters"
+        return "entry"
     return "outside"
 
 
@@ -842,6 +842,31 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     events_csv_path = out_dir / "events.csv"
     points_for_events = smoothed_points if smoothed_points is not None else filtered_points
     _write_events_csv(events_csv_path, points_for_events, valid_gate_mask)
+    tracks_svg_path = out_dir / "tracks.svg"
+    export_tracks_svg(
+        tracks_svg_path,
+        width=meta.width,
+        height=meta.height,
+        points=filtered_points,
+        line_thickness=int(cfg["output"]["overlay_line_thickness"]),
+        start_radius=int(cfg["output"]["overlay_start_radius"]),
+        alpha=float(cfg["output"].get("overlay_alpha", 1.0)),
+        draw_track_labels=bool(cfg["output"].get("overlay_draw_track_labels", False)),
+        draw_track_labels_at_end=bool(cfg["output"].get("overlay_draw_track_labels_at_end", False)),
+        label_font_scale=float(cfg["output"].get("overlay_label_font_scale", 0.5)),
+        label_thickness=int(cfg["output"].get("overlay_label_thickness", 1)),
+        valid_region_mask=valid_mask,
+        direction_mask=valid_gate_mask,
+    )
+    tracks_render_json_path = out_dir / "tracks_render.json"
+    export_tracks_render_json(
+        tracks_render_json_path,
+        width=meta.width,
+        height=meta.height,
+        points=filtered_points,
+        valid_region_mask=valid_mask,
+        direction_mask=valid_gate_mask,
+    )
 
     overlay_line_t = int(cfg["output"]["overlay_line_thickness"])
     overlay_start_r = int(cfg["output"]["overlay_start_radius"])
@@ -959,6 +984,8 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "background_png": str(background_path.resolve()),
             "tracks_csv": str(tracks_csv_path.resolve()),
             "events_csv": str(events_csv_path.resolve()),
+            "tracks_svg": str(tracks_svg_path.resolve()),
+            "tracks_render_json": str(tracks_render_json_path.resolve()),
             "tracks_overlay_png": str(overlay_path.resolve()),
             **overlay_smoothing_paths,
             "track_clips": track_clip_outputs,
