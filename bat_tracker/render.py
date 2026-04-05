@@ -38,7 +38,7 @@ def _svg_label_font_size(label_font_scale: float) -> str:
     # cv2.putText with FONT_HERSHEY_SIMPLEX renders larger than a same-number
     # SVG font-size. This compensation keeps SVG labels visually aligned with
     # the PNG overlay labels.
-    return _svg_number(max(0.3, float(label_font_scale)) * 24.0)
+    return _svg_number(max(0.3, float(label_font_scale)) * 28.0)
 
 
 def _point_in_mask_xy(x: float, y: float, mask: np.ndarray) -> bool:
