@@ -5,6 +5,7 @@ Proyecto Python para Linux orientado a CPU (con opcion CUDA cuando esta disponib
 - `background.png`: fondo por mediana temporal
 - `valid_region/`: mascara vertical de zona valida estimada por perfil de iluminacion o profundidad
 - `tracks.csv`: trayectorias 2D por objeto
+- `track_candidates.csv`: evaluacion de todos los tracks candidatos con score y motivos de rechazo
 - `events.csv`: resumen por track con direccion, duracion, desplazamiento y estadisticas
 - `tracks.svg`: artefacto vectorial autocontenido con las trayectorias 2D en coordenadas originales
 - `tracks_render.json`: geometria normalizada por track para consumo externo
@@ -91,6 +92,7 @@ Se escriben en la carpeta indicada por `--output`:
 - `valid_region/gate_overlay.png`: debug visual del gate real usado en tracking tras aplicar `valid_region_gate_dilate_px`.
 - `valid_region/profile.png`: debug de region valida (perfil horizontal en modo `horizontal_illumination_profile`; mapa de profundidad en modos `central_deep_layer`/`hybrid_deep_layer_profile`).
 - `tracks.csv`: trayectorias 2D por deteccion y frame.
+- `track_candidates.csv`: auditoria opcional de todos los tracks candidatos tras merge, con `accepted`, `score` y `reject_reasons`.
 - `events.csv`: resumen por track con inicio/fin, duracion, desplazamiento, recorrido, straightness y direccion.
 - `tracks.svg`: export vectorial autocontenido de todas las trayectorias en el sistema de coordenadas original del video, con el mismo color por `track_id` y las mismas etiquetas opcionales que `tracks_overlay.png`.
 - `tracks_render.json`: export JSON con `width`, `height`, puntos por track y metadatos minimos (`track_id`, `frame_start`, `frame_end`, `duration_sec`, `direction`, `point_start`, `point_end`).
@@ -100,6 +102,7 @@ Se escriben en la carpeta indicada por `--output`:
 - `track_clips/` (opcional): clips de video por track (`track_0001_000120-000186.mp4`, etc.).
 - `meta.json`: metadatos del video, parametros efectivos y metricas de ejecucion.
   - incluye bloques `video`, `parameters`, `background`, `valid_region`, `metrics`, `execution`, `performance`, `outputs`, `trajectory_smoothing` y `postprocess`.
+  - `postprocess` resume tambien cuantos candidatos se aceptaron/rechazaron y las causas mas frecuentes.
 
 ## Formato de tracks.csv
 
@@ -123,9 +126,10 @@ Columnas exactas:
 4. Umbral binario (fijo u Otsu) + morfologia (open/close) + contornos.
 5. Filtrado de blobs por area minima/maxima.
 6. Tracking 2D frame a frame con asignacion greedy por distancia maxima y prediccion por velocidad para reducir cortes.
-7. Export de `tracks.csv`, `events.csv`, `tracks.svg`, `tracks_render.json` y render final `tracks_overlay.png` a partir de la misma geometria en memoria (mismo color por track, primer punto mas grande y mismas etiquetas opcionales en PNG/SVG).
-8. Si `valid_region.enabled`, calculo de banda vertical valida desde iluminacion horizontal y guardado en `valid_region/*`.
-9. Export de `meta.json` con parametros, metadatos y metricas.
+7. Merge automatico opcional de tracks fragmentados antes del filtrado final.
+8. Evaluacion centralizada de tracks candidatos (score + motivos de rechazo) y export de `tracks.csv`, `events.csv`, `tracks.svg`, `tracks_render.json` y render final `tracks_overlay.png`.
+9. Si `valid_region.enabled`, calculo de banda vertical valida desde iluminacion horizontal y guardado en `valid_region/*`.
+10. Export de `meta.json` con parametros, metadatos y metricas.
    - incluye `postprocess.auto_merges_applied` cuando `tracking.auto_merge_suggested` esta activo.
    - incluye `trajectory_smoothing.enabled/window` y rutas extra de overlay cuando el suavizado esta activado.
 
@@ -159,6 +163,7 @@ Usa `config.yaml.example` como base.
   - `tracking.require_start_or_end_in_valid_region`: conserva solo tracks que empiezan o acaban dentro de la mascara valida
   - `tracking.valid_region_gate_dilate_px`: dilata la mascara valida en pixeles antes de aplicar el filtro inicio/fin
   - `tracking.auto_merge_suggested`: fusion automatica postproceso de tracks potencialmente duplicados
+  - `tracking.export_track_candidates`: escribe `track_candidates.csv` con todos los tracks evaluados, incluidos los rechazados
   - `tracking.merge_max_gap_frames` y `tracking.merge_max_endpoint_distance`: merge por handoff cercano (fin->inicio)
   - `tracking.merge_overlap_min_common_frames`: minimo de frames comunes para evaluar merge por solape
   - `tracking.merge_overlap_max_mean_distance`: distancia media maxima en frames comunes

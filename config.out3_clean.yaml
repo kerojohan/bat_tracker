@@ -1,9 +1,9 @@
 background:
   sample_frames: 120
   uniform_sampling: true
+  input_image: ""
   context_start_sec: 0.0
   context_duration_sec: -1.0
-
 detection:
   blur_kernel: 9
   threshold_mode: fixed
@@ -24,32 +24,37 @@ detection:
   temporal_burst_window_frames: 10
   temporal_burst_trigger_frames: 3
   temporal_burst_cooldown_frames: 24
-
 tracking:
   max_distance: 120.0
   max_missed: 12
   min_track_length: 6
+  min_track_duration_sec: 0.1
   min_track_displacement: 20.0
   min_track_path_length: 28.0
   min_track_straightness: 0.08
-  min_track_duration_sec: 0.1
+  require_start_or_end_in_valid_region: true
+  valid_region_gate_dilate_px: 20
   auto_merge_suggested: true
   merge_max_gap_frames: 12
   merge_max_endpoint_distance: 100.0
   merge_overlap_min_common_frames: 3
   merge_overlap_max_mean_distance: 60.0
   merge_overlap_min_direction_cosine: 0.8
-  require_start_or_end_in_valid_region: true
-  valid_region_gate_dilate_px: 20
-
+  export_track_candidates: true
 valid_region:
   enabled: true
   method: hybrid_deep_layer_profile
   apply_to_detection: false
+  hybrid_combine_mode: and
+  input_image: ""
+  input_mask: ""
   context_start_sec: 0.0
   context_duration_sec: 75.0
-  hybrid_combine_mode: and
   blur_kernel_size: 151
+  profile_smooth_window: 31
+  threshold_ratio: 0.45
+  safety_margin: 10
+  min_region_width_ratio: 0.35
   depth_percentile: 85.0
   depth_morph_kernel: 9
   depth_min_area_ratio: 0.02
@@ -62,11 +67,10 @@ valid_region:
   bottom_contour_gradient_quantile: 52.0
   bottom_contour_regularization: 1.25
   bottom_contour_max_step_px: 8
-  bottom_contour_downward_bias: 0.20
-  bottom_contour_regularization_mix: 0.90
+  bottom_contour_downward_bias: 0.2
+  bottom_contour_regularization_mix: 0.9
   bottom_contour_deepest_strong_ratio: 0.62
   output_subdir: valid_region
-
 output:
   overlay_line_thickness: 2
   overlay_start_radius: 5
@@ -75,6 +79,10 @@ output:
   overlay_draw_track_labels_at_end: true
   overlay_label_font_scale: 0.5
   overlay_label_thickness: 1
+  progress_enabled: true
+  progress_step_percent: 5
   export_track_clips: false
   track_clips_subdir: track_clips
   track_clips_padding_frames: 5
+  trajectory_smoothing_enabled: false
+  trajectory_smoothing_window: 5
