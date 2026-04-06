@@ -111,6 +111,30 @@ EVENTS_CSV_COLUMNS = [
     "direction",
 ]
 
+TRACK_CANDIDATES_CSV_COLUMNS = [
+    "video_id",
+    "track_id",
+    "accepted",
+    "reject_reasons",
+    "score",
+    "frame_start",
+    "frame_end",
+    "num_detections",
+    "duration_sec",
+    "x_start",
+    "y_start",
+    "x_end",
+    "y_end",
+    "displacement_px",
+    "path_length_px",
+    "straightness",
+    "mean_speed_px_sec",
+    "mean_area",
+    "start_in_valid_region",
+    "end_in_valid_region",
+    "direction",
+]
+
 
 def _classify_direction(start_inside: bool, end_inside: bool) -> str:
     if start_inside and end_inside:
@@ -118,6 +142,24 @@ def _classify_direction(start_inside: bool, end_inside: bool) -> str:
     if start_inside and not end_inside:
         return "exit"
     if not start_inside and end_inside:
+        return "entry"
+    return "outside"
+
+
+def _infer_outside_direction_from_motion(
+    start: TrackPoint,
+    end: TrackPoint,
+    frame_shape: tuple[int, int] | None,
+) -> str:
+    if frame_shape is None:
+        return "outside"
+    height, width = frame_shape
+    dy = end.y - start.y
+    min_vertical_move = max(40.0, 0.15 * float(height))
+    top_band = 0.20 * float(height)
+    if dy <= -min_vertical_move and end.y <= top_band:
+        return "exit"
+    if dy >= min_vertical_move and start.y <= top_band:
         return "entry"
     return "outside"
 
@@ -148,6 +190,8 @@ def _write_events_csv(
             s_in = _point_in_mask(start, valid_mask)
             e_in = _point_in_mask(end, valid_mask)
             direction = _classify_direction(s_in, e_in)
+            if direction == "outside":
+                direction = _infer_outside_direction_from_motion(start, end, valid_mask.shape[:2])
         else:
             s_in = None
             e_in = None
@@ -189,6 +233,14 @@ def _write_tracks_csv(path: Path, points: List[TrackPoint]) -> None:
         writer.writeheader()
         for point in sorted(points, key=lambda p: (p.track_id, p.frame)):
             row = asdict(point)
+            writer.writerow(row)
+
+
+def _write_track_candidates_csv(path: Path, rows: List[dict]) -> None:
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=TRACK_CANDIDATES_CSV_COLUMNS)
+        writer.writeheader()
+        for row in rows:
             writer.writerow(row)
 
 
@@ -356,7 +408,12 @@ def _filter_track_points(
     tracking_cfg: Dict,
     fps: float,
     valid_mask: np.ndarray | None = None,
-) -> List[TrackPoint]:
+) -> tuple[List[TrackPoint], List[dict]]:
+    def _ratio(value: float, threshold: float) -> float:
+        if threshold <= 0.0:
+            return 1.0
+        return min(1.0, max(0.0, value / threshold))
+
     min_track_length_cfg = int(tracking_cfg.get("min_track_length", 1))
     min_track_duration_sec = float(tracking_cfg.get("min_track_duration_sec", 0.0))
     min_track_length_from_sec = int(ceil(max(0.0, min_track_duration_sec) * max(1e-6, fps)))
@@ -366,39 +423,100 @@ def _filter_track_points(
     min_track_straightness = float(tracking_cfg.get("min_track_straightness", 0.0))
     require_start_or_end_in_valid_region = bool(tracking_cfg.get("require_start_or_end_in_valid_region", False))
     gate_mask = _build_valid_region_gate_mask(valid_mask, tracking_cfg)
+    strong_short_score_min = 0.9
 
     by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
     for point in points:
         by_track[point.track_id].append(point)
 
     filtered: List[TrackPoint] = []
+    assessments: List[dict] = []
     for track_points in by_track.values():
         track_points = sorted(track_points, key=lambda p: p.frame)
-        if len(track_points) < min_track_length:
-            continue
-
         start = track_points[0]
         end = track_points[-1]
+        duration = end.time_sec - start.time_sec
         displacement = hypot(end.x - start.x, end.y - start.y)
-        if displacement < min_track_displacement:
-            continue
-
         path_length = _path_length(track_points)
+        straightness = (displacement / path_length) if path_length > 0 else 0.0
+        mean_speed = (path_length / duration) if duration > 0 else 0.0
+        avg_area = sum(p.area for p in track_points) / len(track_points)
+        score = mean(
+            [
+                _ratio(float(len(track_points)), float(min_track_length)),
+                _ratio(displacement, min_track_displacement),
+                _ratio(path_length, min_track_path_length),
+                _ratio(straightness, min_track_straightness) if min_track_straightness > 0.0 else 1.0,
+            ]
+        )
+        reject_reasons: list[str] = []
+        if len(track_points) < min_track_length:
+            reject_reasons.append("min_track_length")
+        if displacement < min_track_displacement:
+            reject_reasons.append("min_track_displacement")
         if path_length < min_track_path_length:
-            continue
-
+            reject_reasons.append("min_track_path_length")
         if min_track_straightness > 0.0 and path_length > 0.0:
-            straightness = displacement / path_length
             if straightness < min_track_straightness:
-                continue
+                reject_reasons.append("min_track_straightness")
 
+        s_in = None
+        e_in = None
+        direction = "unknown"
         if require_start_or_end_in_valid_region and gate_mask is not None:
-            if not (_point_in_mask(start, gate_mask) or _point_in_mask(end, gate_mask)):
-                continue
+            s_in = _point_in_mask(start, gate_mask)
+            e_in = _point_in_mask(end, gate_mask)
+            direction = _classify_direction(s_in, e_in)
+            if not (s_in or e_in):
+                reject_reasons.append("valid_region_gate")
+        elif valid_mask is not None:
+            s_in = _point_in_mask(start, valid_mask)
+            e_in = _point_in_mask(end, valid_mask)
+            direction = _classify_direction(s_in, e_in)
+            if direction == "outside":
+                direction = _infer_outside_direction_from_motion(start, end, valid_mask.shape[:2])
+
+        accepted = not reject_reasons
+        if not accepted:
+            reasons_set = set(reject_reasons)
+            if (
+                reasons_set.issubset({"min_track_length", "valid_region_gate"})
+                and len(track_points) >= min_track_length_from_sec
+                and score >= strong_short_score_min
+            ):
+                accepted = True
+                reject_reasons = []
+        assessments.append({
+            "video_id": start.video_id,
+            "track_id": start.track_id,
+            "accepted": accepted,
+            "reject_reasons": ";".join(reject_reasons),
+            "score": round(score, 4),
+            "frame_start": start.frame,
+            "frame_end": end.frame,
+            "num_detections": len(track_points),
+            "duration_sec": round(duration, 4),
+            "x_start": round(start.x, 2),
+            "y_start": round(start.y, 2),
+            "x_end": round(end.x, 2),
+            "y_end": round(end.y, 2),
+            "displacement_px": round(displacement, 2),
+            "path_length_px": round(path_length, 2),
+            "straightness": round(straightness, 4),
+            "mean_speed_px_sec": round(mean_speed, 2),
+            "mean_area": round(avg_area, 2),
+            "start_in_valid_region": s_in if s_in is not None else "",
+            "end_in_valid_region": e_in if e_in is not None else "",
+            "direction": direction,
+        })
+
+        if not accepted:
+            continue
 
         filtered.extend(track_points)
 
-    return filtered
+    assessments.sort(key=lambda row: int(row["track_id"]))
+    return filtered, assessments
 
 
 def _vector_cosine(v0: tuple[float, float], v1: tuple[float, float]) -> float | None:
@@ -553,16 +671,31 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
             )
 
     merged_points = sorted(merged_points, key=lambda p: (p.track_id, p.frame))
-    deduped: List[TrackPoint] = []
-    seen = set()
+    by_track_frame: Dict[tuple[int, int], List[TrackPoint]] = defaultdict(list)
     for point in merged_points:
-        key = (point.track_id, point.frame, round(point.x, 3), round(point.y, 3))
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(point)
+        by_track_frame[(point.track_id, point.frame)].append(point)
 
-    return deduped, merges_applied
+    consolidated: List[TrackPoint] = []
+    for key in sorted(by_track_frame.keys()):
+        candidates = by_track_frame[key]
+        if len(candidates) == 1:
+            consolidated.append(candidates[0])
+            continue
+
+        # Keep one point per merged track/frame. Prefer the strongest blob and
+        # break ties deterministically to stabilize overlays and exports.
+        best = max(
+            candidates,
+            key=lambda p: (
+                p.area,
+                -abs(p.vx) - abs(p.vy),
+                -p.x,
+                -p.y,
+            ),
+        )
+        consolidated.append(best)
+
+    return consolidated, merges_applied
 
 
 def _export_track_clips(
@@ -823,14 +956,22 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
 
     progress.start_stage("postprocess")
     postprocess_started = perf_counter()
-    filtered_points = _filter_track_points(all_points, cfg["tracking"], meta.fps, valid_mask=valid_mask)
-    filtered_points, merges_applied = _auto_merge_track_points(filtered_points, cfg["tracking"])
+    merged_points, merges_applied = _auto_merge_track_points(all_points, cfg["tracking"])
+    filtered_points, track_assessments = _filter_track_points(
+        merged_points,
+        cfg["tracking"],
+        meta.fps,
+        valid_mask=valid_mask,
+    )
     perf.record("postprocess_stage", perf_counter() - postprocess_started, executions=1)
     progress.complete_stage("postprocess", detail="postprocess done")
 
     progress.start_stage("exports_core")
     tracks_csv_path = out_dir / "tracks.csv"
     _write_tracks_csv(tracks_csv_path, filtered_points)
+    track_candidates_csv_path = out_dir / "track_candidates.csv"
+    if bool(cfg["tracking"].get("export_track_candidates", False)):
+        _write_track_candidates_csv(track_candidates_csv_path, track_assessments)
 
     out_cfg_export = cfg.get("output", {})
     smoothing_on = bool(out_cfg_export.get("trajectory_smoothing_enabled", False))
@@ -987,6 +1128,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "tracks_svg": str(tracks_svg_path.resolve()),
             "tracks_render_json": str(tracks_render_json_path.resolve()),
             "tracks_overlay_png": str(overlay_path.resolve()),
+            "track_candidates_csv": (
+                str(track_candidates_csv_path.resolve())
+                if bool(cfg["tracking"].get("export_track_candidates", False))
+                else ""
+            ),
             **overlay_smoothing_paths,
             "track_clips": track_clip_outputs,
             **valid_region_outputs,
@@ -994,6 +1140,17 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         "postprocess": {
             "auto_merge_enabled": bool(cfg["tracking"].get("auto_merge_suggested", False)),
             "auto_merges_applied": merges_applied,
+            "track_candidates_total": len(track_assessments),
+            "track_candidates_kept": sum(1 for row in track_assessments if row["accepted"]),
+            "track_candidates_rejected": sum(1 for row in track_assessments if not row["accepted"]),
+            "track_candidates_top_rejections": dict(
+                Counter(
+                    reason
+                    for row in track_assessments
+                    for reason in str(row["reject_reasons"]).split(";")
+                    if reason
+                )
+            ),
         },
     }
 

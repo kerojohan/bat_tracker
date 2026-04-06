@@ -55,6 +55,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "merge_overlap_min_common_frames": 3,
         "merge_overlap_max_mean_distance": 60.0,
         "merge_overlap_min_direction_cosine": 0.8,
+        "export_track_candidates": False,
     },
     "valid_region": {
         "enabled": True,
