@@ -146,6 +146,32 @@ def _classify_direction(start_inside: bool, end_inside: bool) -> str:
     return "outside"
 
 
+def _classify_direction_full(
+    s_in: bool,
+    e_in: bool,
+    tps: List[TrackPoint],
+    valid_mask: np.ndarray | None,
+    frame_shape: tuple[int, int] | None = None,
+) -> str:
+    """Classify direction using the full trajectory.
+
+    When start and end are both inside the valid region the initial
+    classification is "inside", but we additionally check every
+    intermediate point.  If any midpoint lies outside the valid region
+    the track crossed the boundary during its flight and should be
+    reclassified as "exit" rather than "inside".
+    """
+    direction = _classify_direction(s_in, e_in)
+    if direction == "inside" and valid_mask is not None and len(tps) > 2:
+        for tp in tps[1:-1]:
+            if not _point_in_mask(tp, valid_mask):
+                direction = "exit"
+                break
+    if direction == "outside" and frame_shape is not None:
+        direction = _infer_outside_direction_from_motion(tps[0], tps[-1], frame_shape)
+    return direction
+
+
 def _infer_outside_direction_from_motion(
     start: TrackPoint,
     end: TrackPoint,
@@ -189,9 +215,7 @@ def _write_events_csv(
         if valid_mask is not None:
             s_in = _point_in_mask(start, valid_mask)
             e_in = _point_in_mask(end, valid_mask)
-            direction = _classify_direction(s_in, e_in)
-            if direction == "outside":
-                direction = _infer_outside_direction_from_motion(start, end, valid_mask.shape[:2])
+            direction = _classify_direction_full(s_in, e_in, tps, valid_mask, valid_mask.shape[:2])
         else:
             s_in = None
             e_in = None
@@ -466,15 +490,13 @@ def _filter_track_points(
         if require_start_or_end_in_valid_region and gate_mask is not None:
             s_in = _point_in_mask(start, gate_mask)
             e_in = _point_in_mask(end, gate_mask)
-            direction = _classify_direction(s_in, e_in)
+            direction = _classify_direction_full(s_in, e_in, track_points, valid_mask)
             if not (s_in or e_in):
                 reject_reasons.append("valid_region_gate")
         elif valid_mask is not None:
             s_in = _point_in_mask(start, valid_mask)
             e_in = _point_in_mask(end, valid_mask)
-            direction = _classify_direction(s_in, e_in)
-            if direction == "outside":
-                direction = _infer_outside_direction_from_motion(start, end, valid_mask.shape[:2])
+            direction = _classify_direction_full(s_in, e_in, track_points, valid_mask, valid_mask.shape[:2])
 
         accepted = not reject_reasons
         if not accepted:
@@ -554,6 +576,7 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
     max_overlap_mean_dist = float(tracking_cfg.get("merge_overlap_max_mean_distance", 60.0))
     min_overlap_cos = float(tracking_cfg.get("merge_overlap_min_direction_cosine", 0.8))
     local_overlap_min_cos = max(0.65, min_overlap_cos - 0.15)
+    proximity_override_dist = float(tracking_cfg.get("merge_overlap_proximity_override_distance", 0.0))
 
     parent: Dict[int, int] = {track_id: track_id for track_id in by_track}
 
@@ -606,7 +629,7 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
             else:
                 b_frames = {p.frame: p for p in b_pts}
                 common_frames = sorted(set(a_frames.keys()).intersection(b_frames.keys()))
-                if len(common_frames) >= 2:
+                if len(common_frames) >= 1:
                     distances = []
                     for frame in common_frames:
                         pa = a_frames[frame]
@@ -621,13 +644,30 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
                     mean_cos = (sum(global_cosines) / len(global_cosines)) if global_cosines else None
 
                     overlap_reason = None
-                    if len(common_frames) >= min_overlap_common:
+                    # Proximity override: two detections within this distance for any shared frame
+                    # are almost certainly the same physical bat — skip direction checks.
+                    if (
+                        proximity_override_dist > 0.0
+                        and mean_distance <= proximity_override_dist
+                        and len(common_frames) >= 1
+                    ):
+                        overlap_reason = "overlap_proximity"
+                    elif len(common_frames) >= min_overlap_common:
                         if mean_distance <= max_overlap_mean_dist and (
                             mean_cos is None or mean_cos >= min_overlap_cos or connector_cos is not None and connector_cos >= min_overlap_cos
                         ):
                             overlap_reason = "overlap"
+                        elif (
+                            # Fragments of a curved trajectory: start vectors agree but end
+                            # vectors diverge because they cover different phases of the arc.
+                            mean_distance <= max_overlap_mean_dist
+                            and start_cos is not None
+                            and start_cos >= local_overlap_min_cos
+                        ):
+                            overlap_reason = "overlap_start_aligned"
                     elif (
-                        mean_distance <= max_overlap_mean_dist
+                        len(common_frames) >= 1
+                        and mean_distance <= max_overlap_mean_dist
                         and connector_cos is not None
                         and connector_cos >= local_overlap_min_cos
                     ):
