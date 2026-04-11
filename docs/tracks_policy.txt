@@ -1,0 +1,181 @@
+TRACKS POLICY
+
+1. Flujo General
+
+1. Se generan detecciones por frame.
+2. El GreedyTracker enlaza cada detección con el track activo más cercano dentro de max_distance, usando predicción por velocidad y permitiendo huecos hasta max_missed frames.
+3. Si una detección no encaja en ningún track activo, nace un track nuevo.
+4. Si un track activo deja de recibir detecciones durante más de max_missed, se cierra.
+5. Después del tracking bruto se aplica auto_merge.
+6. Después del merge se aplica el filtrado final de retención o rechazo.
+7. Lo aceptado se exporta en tracks.csv, events.csv, tracks.svg y tracks_render.json.
+
+
+2. Casuísticas De Retención Actual
+
+Track retenido directamente
+
+- Cumple min_track_length.
+- Cumple min_track_duration_sec.
+- Cumple min_track_displacement.
+- Cumple min_track_path_length.
+- Cumple min_track_straightness si está activado.
+- Si require_start_or_end_in_valid_region=true, además empieza o acaba dentro de la gate de región válida.
+
+Track rechazado
+
+- Se rechaza si falla cualquiera de estos filtros:
+- min_track_length
+- min_track_displacement
+- min_track_path_length
+- min_track_straightness
+- Si está activo require_start_or_end_in_valid_region y el track no empieza ni acaba dentro de la gate, se añade reject reason valid_region_gate.
+
+Track rescatado
+
+- Aunque haya sido rechazado, se rescata si:
+- su único motivo de rechazo es min_track_length
+- cumple la duración mínima en segundos
+- tiene score >= 0.9
+
+El score actual se calcula promediando:
+
+- longitud del track
+- desplazamiento
+- longitud recorrida
+- rectitud
+
+Condición clave del rescate
+
+- El rescate solo aplica cuando el track es corto (min_track_length) pero toca la gate.
+- Si el track falla valid_region_gate (empieza y acaba fuera de la gate), no se rescata bajo ninguna circunstancia.
+- El score geométrico alto no compensa estar completamente en penumbra.
+
+
+3. Casuísticas De Región Válida
+
+Sin región válida
+
+- No hay control espacial.
+- La dirección queda como unknown.
+
+Con región válida pero sin gate obligatoria
+
+- Se calcula start_in_valid_region y end_in_valid_region.
+- La dirección puede ser:
+- inside
+- entry
+- exit
+- outside
+- Si ambos puntos quedan fuera, todavía puede inferirse entry o exit por movimiento vertical fuerte cerca de la banda superior.
+
+Con gate obligatoria
+
+- La decisión de aceptación usa la gate mask.
+- La gate mask es la máscara válida dilatada por valid_region_gate_dilate_px.
+- Basta con que el track empiece o acabe dentro de esa gate.
+- Si no toca la gate en ninguno de los extremos, cae por valid_region_gate, salvo rescate.
+
+
+4. Casuísticas De Merge Actual
+
+Sin auto_merge
+
+- Cada fragmento queda como track independiente.
+
+Merge por handoff
+
+- Dos tracks se fusionan si no solapan en el tiempo y:
+- el hueco entre final e inicio es pequeño
+- la distancia entre extremos es pequeña
+- Representa un mismo vuelo perdido durante unos pocos frames.
+
+Merge por overlap
+
+- Dos tracks se fusionan si solapan en frames y:
+- comparten al menos merge_overlap_min_common_frames
+- la distancia media en frames comunes es baja
+- la dirección global o local es compatible
+- Representa dos tracks describiendo el mismo vuelo en la misma ventana temporal.
+
+Merge por overlap_local
+
+- Dos tracks se fusionan si solo comparten 2 frames pero:
+- la distancia media sigue siendo baja
+- la continuidad local en el empalme es buena
+- Este caso cubre fragmentaciones cortas pero visualmente continuas.
+
+Consolidación post-merge
+
+- Si tras fusionar quedan dos puntos del mismo track en el mismo frame, se conserva uno solo.
+- La prioridad actual es:
+- mayor area
+- luego menor velocidad absoluta
+- luego desempate determinista por posición
+
+
+5. Casuísticas De Fragmentación
+
+Mismo murciélago partido en dos tracks
+
+- Puede ocurrir si:
+- el centroide del blob pega un salto
+- desaparece unos frames
+- cambia mucho la forma del blob
+- otro blob compite en el matching
+- Si luego pasa el auto_merge, se recompone.
+- Si no pasa, quedan dos tracks visibles del mismo vuelo.
+
+Dos tracks distintos muy próximos
+
+- No deben fusionarse si la continuidad local o la dirección del empalme no encajan.
+- Esto evita unir vuelos distintos solo porque se crucen o se acerquen.
+
+
+6. Criterio Funcional Recomendado
+
+Retener
+
+- Tracks que entren en la zona válida.
+- Tracks que salgan de la zona válida.
+- Tracks que transiten claramente por la zona válida.
+- Tracks que, tras merge, formen un único vuelo coherente asociado a la zona válida.
+
+Descartar
+
+- Tracks pequeños que empiezan y acaban en penumbra.
+- Tracks enteros fuera de la valid_region_gate.
+- Tracks cortos y fuera que solo sobreviven por score geométrico alto.
+- Fragmentos aislados fuera de la zona válida aunque sean rectos.
+
+Fusionar
+
+- Fragmentos con continuidad espacio-temporal clara.
+- Subtracks superpuestos del mismo vuelo.
+- Tracks con solape corto pero conexión local clara.
+
+No fusionar
+
+- Tracks cercanos sin continuidad real.
+- Tracks con trayectoria incompatible en el punto de unión.
+- Cruces o encuentros de dos murciélagos distintos.
+
+
+7. Norma Implementada
+
+- Un track que empieza y acaba fuera de la valid_region_gate se descarta siempre, sea corto o largo.
+- El rescate por score solo aplica a tracks que fallan únicamente por longitud (min_track_length) y tocan la gate.
+- El score geométrico no puede rescatar un track que falla valid_region_gate.
+- El merge se decide por continuidad local espacio-temporal, no solo por dirección global del track.
+- La región válida tiene prioridad absoluta sobre la geometría.
+
+
+8. Resumen Ejecutivo
+
+- El pipeline combina tracking, merge y filtrado geométrico con control espacial por valid_region_gate.
+- El rescate por score solo aplica a tracks cortos que tocan la gate, no a tracks en penumbra.
+- La principal fuente de fragmentación es la rigidez del merge cuando el blob cambia de forma o continuidad.
+- El criterio del proyecto es:
+- conservar vuelos realmente asociados a la región válida
+- fusionar fragmentos del mismo vuelo
+- descartar cualquier track que empiece y acabe fuera de la valid_region_gate

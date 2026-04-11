@@ -9,8 +9,9 @@ import cv2
 import numpy as np
 import yaml
 
-from bat_tracker.pipeline import run_pipeline
+from bat_tracker.pipeline import _auto_merge_track_points, run_pipeline
 from bat_tracker.render import export_tracks_render_json, export_tracks_svg
+from bat_tracker.tracker import TrackPoint
 
 
 SVG_NS = {"svg": "http://www.w3.org/2000/svg"}
@@ -196,3 +197,124 @@ def test_svg_and_render_json_export_empty_tracks_as_valid_empty_documents(tmp_pa
     svg_root = ET.parse(svg_path).getroot()
     assert svg_root.attrib["viewBox"] == "0 0 64 48"
     assert svg_root.findall("svg:g[@class='track']", SVG_NS) == []
+
+
+def _make_track_point(track_id: int, frame: int, x: float, y: float) -> TrackPoint:
+    return TrackPoint(
+        video_id="video",
+        track_id=track_id,
+        frame=frame,
+        time_sec=frame / 30.0,
+        x=x,
+        y=y,
+        vx=0.0,
+        vy=0.0,
+        bbox_x1=int(round(x)) - 1,
+        bbox_y1=int(round(y)) - 1,
+        bbox_x2=int(round(x)) + 1,
+        bbox_y2=int(round(y)) + 1,
+        area=20.0,
+    )
+
+
+def test_auto_merge_uses_local_overlap_continuity_for_short_shared_window() -> None:
+    points = [
+        _make_track_point(202, 32671, 715.5, 621.0),
+        _make_track_point(202, 32672, 739.5, 631.5),
+        _make_track_point(202, 32673, 760.5, 635.5),
+        _make_track_point(202, 32674, 785.0, 644.0),
+        _make_track_point(202, 32675, 810.5, 641.5),
+        _make_track_point(202, 32676, 837.5, 625.5),
+        _make_track_point(202, 32677, 860.5, 609.0),
+        _make_track_point(202, 32678, 895.0, 570.0),
+        _make_track_point(202, 32679, 922.0, 531.0),
+        _make_track_point(202, 32680, 917.5, 465.5),
+        _make_track_point(203, 32679, 882.0, 494.5),
+        _make_track_point(203, 32680, 979.0, 449.0),
+        _make_track_point(203, 32681, 1027.0, 404.0),
+        _make_track_point(203, 32682, 1035.5, 285.0),
+        _make_track_point(203, 32683, 1078.0, 172.0),
+        _make_track_point(203, 32684, 1128.5, 54.0),
+    ]
+    cfg = {
+        "auto_merge_suggested": True,
+        "merge_max_gap_frames": 12,
+        "merge_max_endpoint_distance": 100.0,
+        "merge_overlap_min_common_frames": 3,
+        "merge_overlap_max_mean_distance": 60.0,
+        "merge_overlap_min_direction_cosine": 0.8,
+    }
+
+    merged_points, merges = _auto_merge_track_points(points, cfg)
+
+    assert any(
+        merge["track_a"] == 202 and merge["track_b"] == 203 and merge["reason"] == "overlap_local"
+        for merge in merges
+    )
+    assert {point.track_id for point in merged_points} == {202}
+
+
+def test_auto_merge_uses_connector_direction_for_overlapping_fragments() -> None:
+    points = [
+        _make_track_point(180, 13432, 708.0, 667.0),
+        _make_track_point(180, 13433, 738.0, 666.5),
+        _make_track_point(180, 13434, 769.0, 661.0),
+        _make_track_point(180, 13435, 797.5, 650.5),
+        _make_track_point(180, 13436, 830.0, 634.5),
+        _make_track_point(180, 13437, 859.0, 606.0),
+        _make_track_point(180, 13438, 881.5, 588.0),
+        _make_track_point(180, 13439, 916.0, 549.5),
+        _make_track_point(180, 13440, 956.0, 486.5),
+        _make_track_point(180, 13441, 1012.0, 461.0),
+        _make_track_point(180, 13442, 1029.0, 363.5),
+        _make_track_point(180, 13443, 1081.0, 303.0),
+        _make_track_point(181, 13439, 937.5, 550.0),
+        _make_track_point(181, 13440, 910.5, 504.5),
+        _make_track_point(181, 13441, 962.5, 477.5),
+        _make_track_point(181, 13442, 984.5, 393.0),
+        _make_track_point(181, 13443, 1002.5, 335.0),
+    ]
+    cfg = {
+        "auto_merge_suggested": True,
+        "merge_max_gap_frames": 12,
+        "merge_max_endpoint_distance": 100.0,
+        "merge_overlap_min_common_frames": 3,
+        "merge_overlap_max_mean_distance": 60.0,
+        "merge_overlap_min_direction_cosine": 0.8,
+    }
+
+    merged_points, merges = _auto_merge_track_points(points, cfg)
+
+    assert any(
+        merge["track_a"] == 180 and merge["track_b"] == 181 and merge["reason"] == "overlap"
+        for merge in merges
+    )
+    assert {point.track_id for point in merged_points} == {180}
+
+
+def test_auto_merge_keeps_nearby_tracks_separate_when_connector_direction_breaks() -> None:
+    points = [
+        _make_track_point(86, 1091, 1703.5, 36.0),
+        _make_track_point(86, 1092, 1703.5, 36.0),
+        _make_track_point(86, 1093, 1722.0, 47.5),
+        _make_track_point(86, 1094, 1693.5, 16.5),
+        _make_track_point(86, 1095, 1663.0, 24.5),
+        _make_track_point(86, 1096, 1671.5, 2.5),
+        _make_track_point(90, 1092, 1640.0, 71.0),
+        _make_track_point(90, 1093, 1651.0, 59.5),
+        _make_track_point(90, 1094, 1671.5, 46.5),
+        _make_track_point(90, 1095, 1707.5, 50.0),
+    ]
+    cfg = {
+        "auto_merge_suggested": True,
+        "merge_max_gap_frames": 12,
+        "merge_max_endpoint_distance": 100.0,
+        "merge_overlap_min_common_frames": 3,
+        "merge_overlap_max_mean_distance": 60.0,
+        "merge_overlap_min_direction_cosine": 0.8,
+    }
+
+    merged_points, merges = _auto_merge_track_points(points, cfg)
+
+    assert merges == []
+    assert {point.track_id for point in merged_points} == {86, 90}

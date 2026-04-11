@@ -480,7 +480,7 @@ def _filter_track_points(
         if not accepted:
             reasons_set = set(reject_reasons)
             if (
-                reasons_set.issubset({"min_track_length", "valid_region_gate"})
+                reasons_set.issubset({"min_track_length"})
                 and len(track_points) >= min_track_length_from_sec
                 and score >= strong_short_score_min
             ):
@@ -527,6 +527,14 @@ def _vector_cosine(v0: tuple[float, float], v1: tuple[float, float]) -> float | 
     return (v0[0] * v1[0] + v0[1] * v1[1]) / (n0 * n1)
 
 
+def _track_edge_vectors(points: List[TrackPoint]) -> tuple[tuple[float, float], tuple[float, float]]:
+    start_idx = min(2, len(points) - 1)
+    end_idx = max(0, len(points) - 3)
+    start_vec = (points[start_idx].x - points[0].x, points[start_idx].y - points[0].y)
+    end_vec = (points[-1].x - points[end_idx].x, points[-1].y - points[end_idx].y)
+    return start_vec, end_vec
+
+
 def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tuple[List[TrackPoint], List[Dict]]:
     if not bool(tracking_cfg.get("auto_merge_suggested", False)):
         return points, []
@@ -545,6 +553,7 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
     min_overlap_common = int(tracking_cfg.get("merge_overlap_min_common_frames", 3))
     max_overlap_mean_dist = float(tracking_cfg.get("merge_overlap_max_mean_distance", 60.0))
     min_overlap_cos = float(tracking_cfg.get("merge_overlap_min_direction_cosine", 0.8))
+    local_overlap_min_cos = max(0.65, min_overlap_cos - 0.15)
 
     parent: Dict[int, int] = {track_id: track_id for track_id in by_track}
 
@@ -570,16 +579,14 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
         a_pts = by_track[track_a_id]
         a_start = a_pts[0]
         a_end = a_pts[-1]
-        a_start_vec = (a_pts[min(2, len(a_pts) - 1)].x - a_pts[0].x, a_pts[min(2, len(a_pts) - 1)].y - a_pts[0].y)
-        a_end_vec = (a_pts[-1].x - a_pts[max(0, len(a_pts) - 3)].x, a_pts[-1].y - a_pts[max(0, len(a_pts) - 3)].y)
+        a_start_vec, a_end_vec = _track_edge_vectors(a_pts)
         a_frames = {p.frame: p for p in a_pts}
 
         for track_b_id in track_ids[idx + 1 :]:
             b_pts = by_track[track_b_id]
             b_start = b_pts[0]
             b_end = b_pts[-1]
-            b_start_vec = (b_pts[min(2, len(b_pts) - 1)].x - b_pts[0].x, b_pts[min(2, len(b_pts) - 1)].y - b_pts[0].y)
-            b_end_vec = (b_pts[-1].x - b_pts[max(0, len(b_pts) - 3)].x, b_pts[-1].y - b_pts[max(0, len(b_pts) - 3)].y)
+            b_start_vec, b_end_vec = _track_edge_vectors(b_pts)
 
             reason = None
             reason_data: Dict[str, float | int] = {}
@@ -599,28 +606,42 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
             else:
                 b_frames = {p.frame: p for p in b_pts}
                 common_frames = sorted(set(a_frames.keys()).intersection(b_frames.keys()))
-                if len(common_frames) >= min_overlap_common:
+                if len(common_frames) >= 2:
                     distances = []
-                    cosines = []
                     for frame in common_frames:
                         pa = a_frames[frame]
                         pb = b_frames[frame]
                         distances.append(hypot(pa.x - pb.x, pa.y - pb.y))
 
                     mean_distance = sum(distances) / len(distances)
-                    c0 = _vector_cosine(a_start_vec, b_start_vec)
-                    c1 = _vector_cosine(a_end_vec, b_end_vec)
-                    if c0 is not None:
-                        cosines.append(c0)
-                    if c1 is not None:
-                        cosines.append(c1)
-                    mean_cos = (sum(cosines) / len(cosines)) if cosines else None
-                    if mean_distance <= max_overlap_mean_dist and (mean_cos is None or mean_cos >= min_overlap_cos):
-                        reason = "overlap"
+                    start_cos = _vector_cosine(a_start_vec, b_start_vec)
+                    end_cos = _vector_cosine(a_end_vec, b_end_vec)
+                    connector_cos = _vector_cosine(a_end_vec, b_start_vec)
+                    global_cosines = [c for c in (start_cos, end_cos) if c is not None]
+                    mean_cos = (sum(global_cosines) / len(global_cosines)) if global_cosines else None
+
+                    overlap_reason = None
+                    if len(common_frames) >= min_overlap_common:
+                        if mean_distance <= max_overlap_mean_dist and (
+                            mean_cos is None or mean_cos >= min_overlap_cos or connector_cos is not None and connector_cos >= min_overlap_cos
+                        ):
+                            overlap_reason = "overlap"
+                    elif (
+                        mean_distance <= max_overlap_mean_dist
+                        and connector_cos is not None
+                        and connector_cos >= local_overlap_min_cos
+                    ):
+                        overlap_reason = "overlap_local"
+
+                    if overlap_reason is not None:
+                        direction_score = connector_cos
+                        if direction_score is None:
+                            direction_score = mean_cos if mean_cos is not None else 1.0
+                        reason = overlap_reason
                         reason_data = {
                             "common_frames": len(common_frames),
                             "mean_distance": mean_distance,
-                            "mean_direction_cosine": mean_cos if mean_cos is not None else 1.0,
+                            "mean_direction_cosine": direction_score,
                         }
 
             if reason is None:
