@@ -3,6 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
+import numpy as np
+from scipy.optimize import linear_sum_assignment
+
 from .detection import Detection
 
 
@@ -50,27 +53,36 @@ class GreedyTracker:
         unmatched_track_ids = set(self._active.keys())
         unmatched_det_idxs = set(range(len(detections)))
 
-        candidate_pairs: List[Tuple[float, int, int]] = []
-        max_distance_sq = self.max_distance_sq
-        for track_id, track in self._active.items():
-            dt_pred = max(1, frame_idx - track.last_frame) / self.fps
-            pred_x = track.x + track.vx * dt_pred
-            pred_y = track.y + track.vy * dt_pred
-            for det_idx, det in enumerate(detections):
-                dx = pred_x - det.x
-                dy = pred_y - det.y
-                d_sq = dx * dx + dy * dy
-                if d_sq <= max_distance_sq:
-                    candidate_pairs.append((d_sq, track_id, det_idx))
-
-        candidate_pairs.sort(key=lambda t: t[0])
         assignments: List[Tuple[int, int]] = []
 
-        for _, track_id, det_idx in candidate_pairs:
-            if track_id in unmatched_track_ids and det_idx in unmatched_det_idxs:
-                assignments.append((track_id, det_idx))
-                unmatched_track_ids.remove(track_id)
-                unmatched_det_idxs.remove(det_idx)
+        if self._active and detections:
+            track_ids_list = list(self._active.keys())
+            n_tracks = len(track_ids_list)
+            n_dets = len(detections)
+            max_dist = self.max_distance
+            # Sentinel: larger than any valid distance, used to mark invalid pairs
+            INF = max_dist * 1e6
+
+            cost = np.full((n_tracks, n_dets), INF, dtype=np.float64)
+            for i, track_id in enumerate(track_ids_list):
+                track = self._active[track_id]
+                dt_pred = max(1, frame_idx - track.last_frame) / self.fps
+                pred_x = track.x + track.vx * dt_pred
+                pred_y = track.y + track.vy * dt_pred
+                for j, det in enumerate(detections):
+                    dx = pred_x - det.x
+                    dy = pred_y - det.y
+                    d = (dx * dx + dy * dy) ** 0.5
+                    if d <= max_dist:
+                        cost[i, j] = d
+
+            row_ind, col_ind = linear_sum_assignment(cost)
+            for i, j in zip(row_ind, col_ind):
+                if cost[i, j] < INF:
+                    track_id = track_ids_list[i]
+                    assignments.append((track_id, j))
+                    unmatched_track_ids.discard(track_id)
+                    unmatched_det_idxs.discard(j)
 
         for track_id, det_idx in assignments:
             track = self._active[track_id]

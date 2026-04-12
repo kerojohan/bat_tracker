@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import csv
+import heapq
 import json
 import sys
 from collections import Counter, defaultdict, deque
@@ -598,110 +599,161 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
 
     merges_applied: List[Dict] = []
     track_ids = sorted(by_track.keys())
-    for idx, track_a_id in enumerate(track_ids):
-        a_pts = by_track[track_a_id]
-        a_start = a_pts[0]
-        a_end = a_pts[-1]
-        a_start_vec, a_end_vec = _track_edge_vectors(a_pts)
-        a_frames = {p.frame: p for p in a_pts}
 
-        for track_b_id in track_ids[idx + 1 :]:
-            b_pts = by_track[track_b_id]
-            b_start = b_pts[0]
-            b_end = b_pts[-1]
-            b_start_vec, b_end_vec = _track_edge_vectors(b_pts)
+    # Precompute per-track data to avoid redundant work per pair.
+    track_data: Dict[int, Dict] = {}
+    for tid in track_ids:
+        pts = by_track[tid]
+        sv, ev = _track_edge_vectors(pts)
+        track_data[tid] = {
+            "start": pts[0],
+            "end": pts[-1],
+            "start_vec": sv,
+            "end_vec": ev,
+            "frames": {p.frame: p for p in pts},
+        }
 
-            reason = None
-            reason_data: Dict[str, float | int] = {}
+    # Generate candidate pairs via temporal sweep + handoff spatial pre-filter.
+    # Temporal sweep: sort tracks by start_frame; maintain a min-heap of active
+    # tracks (end_frame, index). Prune tracks that ended more than max_gap frames
+    # before the current track starts. For handoff-type candidates (A ends before
+    # B starts), additionally require endpoint proximity to avoid O(N²) behaviour.
+    n = len(track_ids)
+    sf_arr = [track_data[tid]["start"].frame for tid in track_ids]
+    ef_arr = [track_data[tid]["end"].frame for tid in track_ids]
+    sx_arr = [track_data[tid]["start"].x for tid in track_ids]
+    sy_arr = [track_data[tid]["start"].y for tid in track_ids]
+    ex_arr = [track_data[tid]["end"].x for tid in track_ids]
+    ey_arr = [track_data[tid]["end"].y for tid in track_ids]
+    max_ep_dist_sq = max_endpoint_dist * max_endpoint_dist
 
-            if a_end.frame < b_start.frame:
-                gap = b_start.frame - a_end.frame
-                dist = hypot(b_start.x - a_end.x, b_start.y - a_end.y)
-                if gap <= max_gap and dist <= max_endpoint_dist:
-                    reason = "handoff"
-                    reason_data = {"gap_frames": gap, "endpoint_distance": dist}
-            elif b_end.frame < a_start.frame:
-                gap = a_start.frame - b_end.frame
-                dist = hypot(a_start.x - b_end.x, a_start.y - b_end.y)
-                if gap <= max_gap and dist <= max_endpoint_dist:
-                    reason = "handoff"
-                    reason_data = {"gap_frames": gap, "endpoint_distance": dist}
-            else:
-                b_frames = {p.frame: p for p in b_pts}
-                common_frames = sorted(set(a_frames.keys()).intersection(b_frames.keys()))
-                if len(common_frames) >= 1:
-                    distances = []
-                    for frame in common_frames:
-                        pa = a_frames[frame]
-                        pb = b_frames[frame]
-                        distances.append(hypot(pa.x - pb.x, pa.y - pb.y))
+    sorted_pos = sorted(range(n), key=lambda i: sf_arr[i])
+    heap: List[Tuple[int, int]] = []  # (end_frame, position)
+    candidate_pairs: List[Tuple[int, int]] = []
 
-                    mean_distance = sum(distances) / len(distances)
-                    start_cos = _vector_cosine(a_start_vec, b_start_vec)
-                    end_cos = _vector_cosine(a_end_vec, b_end_vec)
-                    connector_cos = _vector_cosine(a_end_vec, b_start_vec)
-                    global_cosines = [c for c in (start_cos, end_cos) if c is not None]
-                    mean_cos = (sum(global_cosines) / len(global_cosines)) if global_cosines else None
+    for b_pos in sorted_pos:
+        b_sf = sf_arr[b_pos]
+        b_id = track_ids[b_pos]
 
-                    overlap_reason = None
-                    # Proximity override: two detections within this distance for any shared frame
-                    # are almost certainly the same physical bat — skip direction checks.
-                    if (
-                        proximity_override_dist > 0.0
-                        and mean_distance <= proximity_override_dist
-                        and len(common_frames) >= 1
+        while heap and heap[0][0] < b_sf - max_gap:
+            heapq.heappop(heap)
+
+        for a_ef, a_pos in heap:
+            a_id = track_ids[a_pos]
+            if a_ef < b_sf:
+                # Handoff A→B: pre-filter by endpoint proximity.
+                dx = ex_arr[a_pos] - sx_arr[b_pos]
+                dy = ey_arr[a_pos] - sy_arr[b_pos]
+                if dx * dx + dy * dy > max_ep_dist_sq:
+                    continue
+            candidate_pairs.append((min(a_id, b_id), max(a_id, b_id)))
+
+        heapq.heappush(heap, (ef_arr[b_pos], b_pos))
+
+    for track_a_id, track_b_id in candidate_pairs:
+        td_a = track_data[track_a_id]
+        td_b = track_data[track_b_id]
+        a_start = td_a["start"]
+        a_end = td_a["end"]
+        a_start_vec = td_a["start_vec"]
+        a_end_vec = td_a["end_vec"]
+        a_frames = td_a["frames"]
+        b_start = td_b["start"]
+        b_end = td_b["end"]
+        b_start_vec = td_b["start_vec"]
+        b_end_vec = td_b["end_vec"]
+
+        reason = None
+        reason_data: Dict[str, float | int] = {}
+
+        if a_end.frame < b_start.frame:
+            gap = b_start.frame - a_end.frame
+            dist = hypot(b_start.x - a_end.x, b_start.y - a_end.y)
+            if gap <= max_gap and dist <= max_endpoint_dist:
+                reason = "handoff"
+                reason_data = {"gap_frames": gap, "endpoint_distance": dist}
+        elif b_end.frame < a_start.frame:
+            gap = a_start.frame - b_end.frame
+            dist = hypot(a_start.x - b_end.x, a_start.y - b_end.y)
+            if gap <= max_gap and dist <= max_endpoint_dist:
+                reason = "handoff"
+                reason_data = {"gap_frames": gap, "endpoint_distance": dist}
+        else:
+            b_frames = td_b["frames"]
+            common_frames = sorted(set(a_frames.keys()).intersection(b_frames.keys()))
+            if len(common_frames) >= 1:
+                distances = []
+                for frame in common_frames:
+                    pa = a_frames[frame]
+                    pb = b_frames[frame]
+                    distances.append(hypot(pa.x - pb.x, pa.y - pb.y))
+
+                mean_distance = sum(distances) / len(distances)
+                start_cos = _vector_cosine(a_start_vec, b_start_vec)
+                end_cos = _vector_cosine(a_end_vec, b_end_vec)
+                connector_cos = _vector_cosine(a_end_vec, b_start_vec)
+                global_cosines = [c for c in (start_cos, end_cos) if c is not None]
+                mean_cos = (sum(global_cosines) / len(global_cosines)) if global_cosines else None
+
+                overlap_reason = None
+                # Proximity override: two detections within this distance for any shared frame
+                # are almost certainly the same physical bat — skip direction checks.
+                if (
+                    proximity_override_dist > 0.0
+                    and mean_distance <= proximity_override_dist
+                    and len(common_frames) >= 1
+                ):
+                    overlap_reason = "overlap_proximity"
+                elif len(common_frames) >= min_overlap_common:
+                    if mean_distance <= max_overlap_mean_dist and (
+                        mean_cos is None or mean_cos >= min_overlap_cos or connector_cos is not None and connector_cos >= min_overlap_cos
                     ):
-                        overlap_reason = "overlap_proximity"
-                    elif len(common_frames) >= min_overlap_common:
-                        if mean_distance <= max_overlap_mean_dist and (
-                            mean_cos is None or mean_cos >= min_overlap_cos or connector_cos is not None and connector_cos >= min_overlap_cos
-                        ):
-                            overlap_reason = "overlap"
-                        elif (
-                            # Fragments of a curved trajectory: start vectors agree but end
-                            # vectors diverge because they cover different phases of the arc.
-                            mean_distance <= max_overlap_mean_dist
-                            and start_cos is not None
-                            and start_cos >= local_overlap_min_cos
-                        ):
-                            overlap_reason = "overlap_start_aligned"
+                        overlap_reason = "overlap"
                     elif (
-                        len(common_frames) >= 1
-                        and mean_distance <= max_overlap_mean_dist
-                        and connector_cos is not None
-                        and connector_cos >= local_overlap_min_cos
+                        # Fragments of a curved trajectory: start vectors agree but end
+                        # vectors diverge because they cover different phases of the arc.
+                        mean_distance <= max_overlap_mean_dist
+                        and start_cos is not None
+                        and start_cos >= local_overlap_min_cos
                     ):
-                        overlap_reason = "overlap_local"
+                        overlap_reason = "overlap_start_aligned"
+                elif (
+                    len(common_frames) >= 1
+                    and mean_distance <= max_overlap_mean_dist
+                    and connector_cos is not None
+                    and connector_cos >= local_overlap_min_cos
+                ):
+                    overlap_reason = "overlap_local"
 
-                    if overlap_reason is not None:
-                        direction_score = connector_cos
-                        if direction_score is None:
-                            direction_score = mean_cos if mean_cos is not None else 1.0
-                        reason = overlap_reason
-                        reason_data = {
-                            "common_frames": len(common_frames),
-                            "mean_distance": mean_distance,
-                            "mean_direction_cosine": direction_score,
-                        }
+                if overlap_reason is not None:
+                    direction_score = connector_cos
+                    if direction_score is None:
+                        direction_score = mean_cos if mean_cos is not None else 1.0
+                    reason = overlap_reason
+                    reason_data = {
+                        "common_frames": len(common_frames),
+                        "mean_distance": mean_distance,
+                        "mean_direction_cosine": direction_score,
+                    }
 
-            if reason is None:
-                continue
+        if reason is None:
+            continue
 
-            ra = find(track_a_id)
-            rb = find(track_b_id)
-            if ra == rb:
-                continue
-            union(track_a_id, track_b_id)
-            merged_to = min(find(track_a_id), find(track_b_id))
-            merges_applied.append(
-                {
-                    "track_a": track_a_id,
-                    "track_b": track_b_id,
-                    "merged_to": merged_to,
-                    "reason": reason,
-                    **reason_data,
-                }
-            )
+        ra = find(track_a_id)
+        rb = find(track_b_id)
+        if ra == rb:
+            continue
+        union(track_a_id, track_b_id)
+        merged_to = min(find(track_a_id), find(track_b_id))
+        merges_applied.append(
+            {
+                "track_a": track_a_id,
+                "track_b": track_b_id,
+                "merged_to": merged_to,
+                "reason": reason,
+                **reason_data,
+            }
+        )
 
     remap: Dict[int, int] = {track_id: find(track_id) for track_id in track_ids}
     if all(src == dst for src, dst in remap.items()):
