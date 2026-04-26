@@ -21,6 +21,15 @@ from .compute import build_execution_plan
 from .config import load_config
 from .detection import build_detection_context
 from .detection import detect_foreground_blobs
+from .fast_events import reconstruct_fast_events
+from .fast_events import reconstruct_fast_events_from_candidates
+from .fast_events import render_fast_events_overlay
+from .fast_events import write_fast_events_csv
+from .fast_events import write_fast_tracks_csv
+from .heatmap_events import reconstruct_heatmap_events
+from .heatmap_events import render_heatmap_events_overlay
+from .heatmap_events import write_heatmap_events_csv
+from .heatmap_events import write_heatmap_tracks_csv
 from .perf import PerformanceCollector
 from .render import export_tracks_render_json, export_tracks_svg, render_tracks_overlay
 from .track_smoothing import smooth_track_points
@@ -909,6 +918,8 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     valid_region_cfg = cfg.get("valid_region", {})
     valid_region_enabled = bool(valid_region_cfg.get("enabled", False))
     export_track_clips_enabled = bool(cfg["output"].get("export_track_clips", False))
+    fast_events_enabled = bool(cfg.get("fast_events", {}).get("enabled", False))
+    heatmap_events_enabled = bool(cfg.get("heatmap_events", {}).get("enabled", False))
     progress = ProgressReporter(
         enabled=bool(cfg["output"].get("progress_enabled", True)),
         step_percent=int(cfg["output"].get("progress_step_percent", 5)),
@@ -917,6 +928,8 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             ("valid_region", 10.0 if valid_region_enabled else 0.0),
             ("frame_processing", 55.0),
             ("postprocess", 8.0),
+            ("fast_events", 6.0 if fast_events_enabled else 0.0),
+            ("heatmap_events", 8.0 if heatmap_events_enabled else 0.0),
             ("exports_core", 12.0),
             ("track_clips", 10.0 if export_track_clips_enabled else 0.0),
         ],
@@ -1078,6 +1091,94 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     )
     perf.record("postprocess_stage", perf_counter() - postprocess_started, executions=1)
     progress.complete_stage("postprocess", detail="postprocess done")
+
+    fast_events = []
+    fast_event_outputs: Dict[str, str] = {
+        "fast_events_csv": "",
+        "fast_tracks_csv": "",
+        "fast_events_overlay_png": "",
+    }
+    if fast_events_enabled:
+        progress.start_stage("fast_events")
+        fast_started = perf_counter()
+        fast_events = reconstruct_fast_events(
+            merged_points,
+            track_assessments,
+            cfg.get("fast_events", {}),
+            frame_shape=(meta.height, meta.width),
+        )
+        used_fast_source_ids = {
+            track_id
+            for event in fast_events
+            for track_id in event.source_track_ids
+        }
+        fast_events.extend(
+            reconstruct_fast_events_from_candidates(
+                track_assessments,
+                cfg.get("fast_events", {}),
+                fps=meta.fps,
+                video_id=meta.video_id,
+                frame_shape=(meta.height, meta.width),
+                first_event_id=int(cfg["fast_events"].get("first_event_id", 10001)) + len(fast_events),
+                exclude_source_track_ids=used_fast_source_ids,
+            )
+        )
+        fast_events_csv_path = out_dir / "fast_events.csv"
+        fast_tracks_csv_path = out_dir / "fast_tracks.csv"
+        fast_overlay_path = out_dir / "fast_events_overlay.png"
+        write_fast_events_csv(fast_events_csv_path, fast_events)
+        write_fast_tracks_csv(fast_tracks_csv_path, fast_events, track_assessments)
+        fast_overlay = render_fast_events_overlay(
+            background,
+            fast_events,
+            line_thickness=int(cfg["fast_events"].get("overlay_line_thickness", 3)),
+            start_radius=int(cfg["fast_events"].get("overlay_start_radius", 6)),
+            alpha=float(cfg["fast_events"].get("overlay_alpha", 1.0)),
+        )
+        cv2.imwrite(str(fast_overlay_path), fast_overlay)
+        fast_event_outputs = {
+            "fast_events_csv": str(fast_events_csv_path.resolve()),
+            "fast_tracks_csv": str(fast_tracks_csv_path.resolve()),
+            "fast_events_overlay_png": str(fast_overlay_path.resolve()),
+        }
+        perf.record("fast_events_stage", perf_counter() - fast_started, executions=1)
+        progress.complete_stage("fast_events", detail=f"fast events {len(fast_events)}")
+
+    heatmap_events = []
+    heatmap_event_outputs: Dict[str, str] = {
+        "heatmap_events_csv": "",
+        "heatmap_tracks_csv": "",
+        "heatmap_events_overlay_png": "",
+    }
+    if heatmap_events_enabled:
+        progress.start_stage("heatmap_events")
+        heatmap_started = perf_counter()
+        heatmap_events = reconstruct_heatmap_events(
+            input_video,
+            fast_events,
+            cfg.get("heatmap_events", {}),
+            fps=meta.fps,
+            frame_count=meta.frame_count,
+        )
+        heatmap_events_csv_path = out_dir / "heatmap_events.csv"
+        heatmap_tracks_csv_path = out_dir / "heatmap_tracks.csv"
+        heatmap_overlay_path = out_dir / "heatmap_events_overlay.png"
+        write_heatmap_events_csv(heatmap_events_csv_path, heatmap_events)
+        write_heatmap_tracks_csv(heatmap_tracks_csv_path, heatmap_events)
+        heatmap_overlay = render_heatmap_events_overlay(
+            background,
+            heatmap_events,
+            line_thickness=int(cfg["heatmap_events"].get("overlay_line_thickness", 5)),
+            alpha=float(cfg["heatmap_events"].get("overlay_alpha", 1.0)),
+        )
+        cv2.imwrite(str(heatmap_overlay_path), heatmap_overlay)
+        heatmap_event_outputs = {
+            "heatmap_events_csv": str(heatmap_events_csv_path.resolve()),
+            "heatmap_tracks_csv": str(heatmap_tracks_csv_path.resolve()),
+            "heatmap_events_overlay_png": str(heatmap_overlay_path.resolve()),
+        }
+        perf.record("heatmap_events_stage", perf_counter() - heatmap_started, executions=1)
+        progress.complete_stage("heatmap_events", detail=f"heatmap events {len(heatmap_events)}")
 
     progress.start_stage("exports_core")
     tracks_csv_path = out_dir / "tracks.csv"
@@ -1247,6 +1348,8 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
                 else ""
             ),
             **overlay_smoothing_paths,
+            **fast_event_outputs,
+            **heatmap_event_outputs,
             "track_clips": track_clip_outputs,
             **valid_region_outputs,
         },
@@ -1264,6 +1367,16 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
                     if reason
                 )
             ),
+        },
+        "fast_events": {
+            "enabled": fast_events_enabled,
+            "events_total": len(fast_events),
+            "source_tracks_total": sum(len(event.source_track_ids) for event in fast_events),
+        },
+        "heatmap_events": {
+            "enabled": heatmap_events_enabled,
+            "events_total": len(heatmap_events),
+            "source_fast_events_total": len({event.source_fast_event_id for event in heatmap_events}),
         },
     }
 

@@ -10,6 +10,8 @@ Proyecto Python para Linux orientado a CPU (con opcion CUDA cuando esta disponib
 - `tracks.svg`: artefacto vectorial autocontenido con las trayectorias 2D en coordenadas originales
 - `tracks_render.json`: geometria normalizada por track para consumo externo
 - `tracks_overlay.png`: trayectorias sobre el fondo
+- `fast_events.csv` y `fast_tracks.csv` (opcional): reconstruccion de eventos rapidos uniendo candidatos aceptados y rechazados
+- `heatmap_events.csv` y `heatmap_tracks.csv` (opcional): reconstruccion cinemática de esos eventos desde heatmaps de movimiento
 - `meta.json`: parametros y metricas de ejecucion
 
 No genera video anotado y no usa modelos entrenados.
@@ -93,6 +95,12 @@ Se escriben en la carpeta indicada por `--output`:
 - `valid_region/profile.png`: debug de region valida (perfil horizontal en modo `horizontal_illumination_profile`; mapa de profundidad en modos `central_deep_layer`/`hybrid_deep_layer_profile`).
 - `tracks.csv`: trayectorias 2D por deteccion y frame.
 - `track_candidates.csv`: auditoria opcional de todos los tracks candidatos tras merge, con `accepted`, `score` y `reject_reasons`.
+- `fast_events.csv`: eventos rapidos reconstruidos desde candidatos, util para vuelos con blur, saltos grandes o salida de la mascara valida.
+- `fast_tracks.csv`: puntos usados por cada evento rapido, con `event_id`, `source_track_id` y motivo de aceptacion/rechazo original.
+- `fast_events_overlay.png`: overlay de los eventos rapidos reconstruidos.
+- `heatmap_events.csv`: eventos rapidos refinados desde heatmap inter-frame, usando `fast_events` como semillas.
+- `heatmap_tracks.csv`: puntos suavizados de la ruta extraida del corredor de movimiento del heatmap.
+- `heatmap_events_overlay.png`: overlay de rutas cinemáticas por heatmap.
 - `events.csv`: resumen por track con inicio/fin, duracion, desplazamiento, recorrido, straightness y direccion.
 - `tracks.svg`: export vectorial autocontenido de todas las trayectorias en el sistema de coordenadas original del video, con el mismo color por `track_id` y las mismas etiquetas opcionales que `tracks_overlay.png`.
 - `tracks_render.json`: export JSON con `width`, `height`, puntos por track y metadatos minimos (`track_id`, `frame_start`, `frame_end`, `duration_sec`, `direction`, `point_start`, `point_end`).
@@ -168,6 +176,16 @@ Usa `config.yaml.example` como base.
   - `tracking.merge_overlap_min_common_frames`: minimo de frames comunes para evaluar merge por solape
   - `tracking.merge_overlap_max_mean_distance`: distancia media maxima en frames comunes
   - `tracking.merge_overlap_min_direction_cosine`: coherencia minima de direccion entre tracks solapados
+- `fast_events.*`: capa opcional para reconstruir salidas muy rapidas agrupando candidatos aceptados/rechazados
+  - `fast_events.enabled`: activa los CSV/overlay de eventos rapidos.
+  - `fast_events.include_rejected_candidates`: permite usar candidatos descartados por filtros como `valid_region_gate`.
+  - `fast_events.min_source_*`: filtros para elegir fragmentos candidatos antes de agruparlos.
+  - `fast_events.max_group_*`: tolerancias temporal/espacial para unir fragmentos en un mismo evento.
+- `heatmap_events.*`: capa opcional posterior a `fast_events` que reconstruye la ruta sobre el rastro acumulado de movimiento
+  - `heatmap_events.enabled`: activa `heatmap_events.csv`, `heatmap_tracks.csv` y `heatmap_events_overlay.png`.
+  - `heatmap_events.threshold/percentile`: sensibilidad del heatmap inter-frame.
+  - `heatmap_events.corridor_width/bins`: anchura del corredor y resolucion de la ruta extraida.
+  - `heatmap_events.seed_y_min/y_max`: limites para evitar que ruido de bordes deforme la ruta.
 - `valid_region.*`: mascara vertical valida para eliminar vignette lateral IR sin recortar interior oscuro de cueva
   - `valid_region.enabled`: activa/desactiva etapa
   - `valid_region.method`: `horizontal_illumination_profile` (default), `central_deep_layer` o `hybrid_deep_layer_profile` (perfil primero y profundidad despues, sin laterales)
