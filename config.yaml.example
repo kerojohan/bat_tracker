@@ -43,6 +43,9 @@ tracking:
   merge_overlap_min_common_frames: 3
   merge_overlap_max_mean_distance: 60.0
   merge_overlap_min_direction_cosine: 0.8
+  # 0 = umbrales en px del propio vídeo. >0 = min_track_displacement y min_track_path_length
+  # se multiplican por (anchura_frame / este valor); define los dos umbrales como para esa anchura.
+  spatial_thresholds_ref_width_px: 0
 
 valid_region:
   enabled: true

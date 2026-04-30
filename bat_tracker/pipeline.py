@@ -423,6 +423,22 @@ def _build_valid_region_gate_mask(valid_mask: np.ndarray | None, tracking_cfg: D
     return gate_mask
 
 
+def _effective_min_track_spatial_thresholds(tracking_cfg: Dict, frame_width: int) -> tuple[float, float, float]:
+    """Umbrales efectivos de desplazamiento y path tras escalado por resolución.
+
+    Returns:
+        Tupla ``(scale, min_track_displacement, min_track_path_length)`` donde
+        ``scale`` es 1.0 si el escalado está desactivado o no hay anchura válida.
+    """
+    base_d = float(tracking_cfg.get("min_track_displacement", 0.0))
+    base_p = float(tracking_cfg.get("min_track_path_length", 0.0))
+    ref = int(tracking_cfg.get("spatial_thresholds_ref_width_px", 0))
+    if ref <= 0 or frame_width <= 0:
+        return 1.0, base_d, base_p
+    scale = frame_width / float(ref)
+    return scale, base_d * scale, base_p * scale
+
+
 def _save_valid_region_gate_overlay(
     background_gray: np.ndarray,
     gate_mask: np.ndarray,
@@ -442,6 +458,7 @@ def _filter_track_points(
     tracking_cfg: Dict,
     fps: float,
     valid_mask: np.ndarray | None = None,
+    frame_width: int | None = None,
 ) -> tuple[List[TrackPoint], List[dict]]:
     def _ratio(value: float, threshold: float) -> float:
         if threshold <= 0.0:
@@ -452,8 +469,13 @@ def _filter_track_points(
     min_track_duration_sec = float(tracking_cfg.get("min_track_duration_sec", 0.0))
     min_track_length_from_sec = int(ceil(max(0.0, min_track_duration_sec) * max(1e-6, fps)))
     min_track_length = max(min_track_length_cfg, min_track_length_from_sec)
-    min_track_displacement = float(tracking_cfg.get("min_track_displacement", 0.0))
-    min_track_path_length = float(tracking_cfg.get("min_track_path_length", 0.0))
+    fw = int(frame_width) if frame_width is not None else 0
+    if fw <= 0 and valid_mask is not None:
+        fw = int(valid_mask.shape[1])
+    _, min_track_displacement, min_track_path_length = _effective_min_track_spatial_thresholds(
+        tracking_cfg,
+        fw,
+    )
     min_track_straightness = float(tracking_cfg.get("min_track_straightness", 0.0))
     require_start_or_end_in_valid_region = bool(tracking_cfg.get("require_start_or_end_in_valid_region", False))
     gate_mask = _build_valid_region_gate_mask(valid_mask, tracking_cfg)
@@ -1088,6 +1110,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         cfg["tracking"],
         meta.fps,
         valid_mask=valid_mask,
+        frame_width=int(meta.width),
     )
     perf.record("postprocess_stage", perf_counter() - postprocess_started, executions=1)
     progress.complete_stage("postprocess", detail="postprocess done")
@@ -1302,6 +1325,18 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "tracks_overlay_smoothed_png": str((out_dir / "tracks_overlay_smoothed.png").resolve()),
         }
 
+    st_scale, st_disp_eff, st_path_eff = _effective_min_track_spatial_thresholds(
+        cfg["tracking"],
+        int(meta.width),
+    )
+    spatial_track_thresholds_meta = {
+        "ref_width_px": int(cfg["tracking"].get("spatial_thresholds_ref_width_px", 0)),
+        "frame_width_px": int(meta.width),
+        "scale": round(st_scale, 6),
+        "effective_min_track_displacement": round(st_disp_eff, 4),
+        "effective_min_track_path_length": round(st_path_eff, 4),
+    }
+
     meta_payload = {
         "trajectory_smoothing": trajectory_smoothing_meta,
         "video": {
@@ -1355,6 +1390,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         },
         "postprocess": {
             "auto_merge_enabled": bool(cfg["tracking"].get("auto_merge_suggested", False)),
+            "spatial_track_thresholds": spatial_track_thresholds_meta,
             "auto_merges_applied": merges_applied,
             "track_candidates_total": len(track_assessments),
             "track_candidates_kept": sum(1 for row in track_assessments if row["accepted"]),

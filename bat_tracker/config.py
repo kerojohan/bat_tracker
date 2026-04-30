@@ -56,6 +56,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "merge_overlap_max_mean_distance": 60.0,
         "merge_overlap_min_direction_cosine": 0.8,
         "export_track_candidates": False,
+        # 0: min_track_displacement/min_track_path_length are absolute video pixels.
+        # >0: both scale by (frame_width / ref); YAML values are at this reference width.
+        "spatial_thresholds_ref_width_px": 0,
     },
     "fast_events": {
         "enabled": False,
@@ -253,3 +256,12 @@ def _validate_config(cfg: Dict[str, Any]) -> None:
         value = int(valid_region.get(field, 0))
         if value < 1 or value % 2 == 0:
             raise ValueError(f"valid_region.{field} must be a positive odd integer, got: {value}")
+
+    tracking = cfg.get("tracking", {})
+    if isinstance(tracking, dict):
+        ref_w = int(tracking.get("spatial_thresholds_ref_width_px", 0))
+        if ref_w < 0:
+            raise ValueError(
+                "tracking.spatial_thresholds_ref_width_px must be >= 0 (0 disables scaling), "
+                f"got: {ref_w}"
+            )

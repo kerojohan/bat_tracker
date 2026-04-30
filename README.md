@@ -111,6 +111,7 @@ Se escriben en la carpeta indicada por `--output`:
 - `meta.json`: metadatos del video, parametros efectivos y metricas de ejecucion.
   - incluye bloques `video`, `parameters`, `background`, `valid_region`, `metrics`, `execution`, `performance`, `outputs`, `trajectory_smoothing` y `postprocess`.
   - `postprocess` resume tambien cuantos candidatos se aceptaron/rechazaron y las causas mas frecuentes.
+  - `postprocess.spatial_track_thresholds`: si `tracking.spatial_thresholds_ref_width_px` es mayor que cero, aqui se guardan `ref_width_px`, `frame_width_px`, el factor `scale` y los umbrales efectivos `effective_min_track_displacement` / `effective_min_track_path_length` usados en el filtrado.
 
 ## Formato de tracks.csv
 
@@ -167,6 +168,7 @@ Usa `config.yaml.example` como base.
   - `tracking.min_track_duration_sec`: duracion minima en segundos (si se define, se combina con `min_track_length`)
   - `tracking.min_track_displacement`: desplazamiento neto minimo (pixeles)
   - `tracking.min_track_path_length`: recorrido acumulado minimo (pixeles)
+  - `tracking.spatial_thresholds_ref_width_px`: anchura de referencia en pixeles para escalar **solo** `min_track_displacement` y `min_track_path_length` entre videos de distinta resolucion. Con `0` (defecto) esos dos umbrales son pixeles absolutos del frame. Con p. ej. `1920`, los valores del YAML se interpretan como si el video midiera 1920 px de ancho; en ejecucion se multiplican por `anchura_real / 1920`. Asi una misma config calibrada en Full HD se aplica de forma coherente a 1280, 960, 4K, etc. El escalado usa el ancho del video (`meta.width`). Los valores efectivos quedan en `meta.json` → `postprocess.spatial_track_thresholds`.
   - `tracking.min_track_straightness`: rectitud minima `desplazamiento/recorrido` (0..1)
   - `tracking.require_start_or_end_in_valid_region`: conserva solo tracks que empiezan o acaban dentro de la mascara valida
   - `tracking.valid_region_gate_dilate_px`: dilata la mascara valida en pixeles antes de aplicar el filtro inicio/fin
@@ -233,10 +235,11 @@ Si aparecen demasiados tracks de ruido:
 
 1. subir `tracking.min_track_displacement` (ej. `20-40`)
 2. subir `tracking.min_track_path_length` (ej. `30-80`)
-3. subir `tracking.min_track_straightness` (ej. `0.1-0.3`)
-4. subir `background.sample_frames` (ej. `100-300`) para estabilizar `background.png`
-5. activar gates anti-flicker en `detection`: `max_global_intensity_shift`, `max_foreground_ratio`, `max_detections_per_frame`
-6. activar gate temporal `detection.temporal_burst_*` para suprimir rafagas cortas de ruido
+3. si procesas la misma config en varias resoluciones, fija `tracking.spatial_thresholds_ref_width_px` a la anchura con la que calibraste (p. ej. `1920`) para que esos dos umbrales escalen con el ancho del frame
+4. subir `tracking.min_track_straightness` (ej. `0.1-0.3`)
+5. subir `background.sample_frames` (ej. `100-300`) para estabilizar `background.png`
+6. activar gates anti-flicker en `detection`: `max_global_intensity_shift`, `max_foreground_ratio`, `max_detections_per_frame`
+7. activar gate temporal `detection.temporal_burst_*` para suprimir rafagas cortas de ruido
 
 ## Tests minimos
 
@@ -244,7 +247,7 @@ Si aparecen demasiados tracks de ruido:
 pytest
 ```
 
-Los tests cubren deteccion, tracking y export/render de salida.
+Los tests cubren deteccion, tracking, export/render de salida y el escalado opcional de umbrales espaciales de track.
 
 ## Agradecimientos / Referencias
 
