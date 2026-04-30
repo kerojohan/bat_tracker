@@ -83,6 +83,14 @@ output:
   overlay_draw_track_labels_at_end: false
   overlay_label_font_scale: 0.5
   overlay_label_thickness: 1
+  tracks_overlay_include_heatmap_events: false
+  tracks_overlay_heatmap_match_max_gap_frames: 12
+  tracks_overlay_heatmap_match_max_distance: 120.0
+  tracks_overlay_heatmap_allowed_directions: [inside, entry]
+  tracks_overlay_heatmap_min_straightness: 0.85
+  tracks_overlay_heatmap_max_turn_deg: 90.0
+  tracks_overlay_heatmap_max_mean_turn_deg: 35.0
+  tracks_overlay_heatmap_simplify_to_line: true
   progress_enabled: true
   progress_step_percent: 5
   export_track_clips: false

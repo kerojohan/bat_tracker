@@ -9,7 +9,12 @@ import cv2
 import numpy as np
 import yaml
 
-from bat_tracker.pipeline import _auto_merge_track_points, run_pipeline
+from bat_tracker.heatmap_events import HeatmapEvent
+from bat_tracker.pipeline import (
+    _auto_merge_track_points,
+    _build_tracks_overlay_points_with_heatmap,
+    run_pipeline,
+)
 from bat_tracker.render import export_tracks_render_json, export_tracks_svg
 from bat_tracker.tracker import TrackPoint
 
@@ -197,6 +202,223 @@ def test_svg_and_render_json_export_empty_tracks_as_valid_empty_documents(tmp_pa
     svg_root = ET.parse(svg_path).getroot()
     assert svg_root.attrib["viewBox"] == "0 0 64 48"
     assert svg_root.findall("svg:g[@class='track']", SVG_NS) == []
+
+
+def test_tracks_overlay_heatmap_events_complete_existing_tracks() -> None:
+    points = [
+        _make_track_point(7, 10, 15.0, 20.0),
+        _make_track_point(7, 20, 25.0, 20.0),
+    ]
+    event = HeatmapEvent(
+        event_id=20001,
+        source_fast_event_id=10001,
+        source_track_ids=[7, 99],
+        video_id="video",
+        frame_start=0,
+        frame_end=30,
+        fps=30.0,
+        points=[(5.0, 20.0), (15.0, 20.0), (25.0, 20.0), (35.0, 20.0)],
+        direction="exit",
+    )
+
+    overlay_points, summary = _build_tracks_overlay_points_with_heatmap(
+        points,
+        [event],
+        {"tracks_overlay_include_heatmap_events": True},
+    )
+
+    assert {point.track_id for point in overlay_points} == {7}
+    assert [point.frame for point in overlay_points] == [0, 10, 20, 30]
+    assert summary["heatmap_events_completed"] == 1
+    assert summary["heatmap_events_added"] == 0
+    assert summary["heatmap_completed_track_ids"] == [7]
+
+
+def test_tracks_overlay_heatmap_events_add_synthetic_tracks() -> None:
+    points = [_make_track_point(7, 10, 15.0, 20.0)]
+    event = HeatmapEvent(
+        event_id=20001,
+        source_fast_event_id=10001,
+        source_track_ids=[99],
+        video_id="video",
+        frame_start=0,
+        frame_end=10,
+        fps=30.0,
+        points=[(305.0, 320.0), (335.0, 320.0)],
+        direction="exit",
+    )
+
+    overlay_points, summary = _build_tracks_overlay_points_with_heatmap(
+        points,
+        [event],
+        {"tracks_overlay_include_heatmap_events": True},
+    )
+
+    assert {point.track_id for point in overlay_points} == {7, 20001}
+    assert [point.frame for point in overlay_points if point.track_id == 20001] == [0, 10]
+    assert summary["heatmap_events_completed"] == 0
+    assert summary["heatmap_events_added"] == 1
+    assert summary["heatmap_added_track_ids"] == [20001]
+
+
+def test_tracks_overlay_heatmap_events_match_by_time_and_distance() -> None:
+    points = [_make_track_point(7, 10, 15.0, 20.0)]
+    event = HeatmapEvent(
+        event_id=20001,
+        source_fast_event_id=10001,
+        source_track_ids=[99],
+        video_id="video",
+        frame_start=0,
+        frame_end=10,
+        fps=30.0,
+        points=[(5.0, 20.0), (35.0, 20.0)],
+        direction="exit",
+    )
+
+    overlay_points, summary = _build_tracks_overlay_points_with_heatmap(
+        points,
+        [event],
+        {
+            "tracks_overlay_include_heatmap_events": True,
+            "tracks_overlay_heatmap_match_max_gap_frames": 12,
+            "tracks_overlay_heatmap_match_max_distance": 120.0,
+        },
+    )
+
+    assert {point.track_id for point in overlay_points} == {7}
+    assert [point.frame for point in overlay_points] == [0, 10]
+    assert summary["heatmap_events_completed"] == 1
+    assert summary["heatmap_events_added"] == 0
+
+
+def test_tracks_overlay_heatmap_events_respect_valid_region_directions() -> None:
+    mask = np.zeros((50, 60), dtype=np.uint8)
+    mask[10:30, 10:30] = 255
+    entry_event = HeatmapEvent(
+        event_id=20001,
+        source_fast_event_id=10001,
+        source_track_ids=[99],
+        video_id="video",
+        frame_start=0,
+        frame_end=10,
+        fps=30.0,
+        points=[(5.0, 20.0), (20.0, 20.0)],
+        direction="entry",
+    )
+    exit_event = HeatmapEvent(
+        event_id=20002,
+        source_fast_event_id=10002,
+        source_track_ids=[100],
+        video_id="video",
+        frame_start=20,
+        frame_end=30,
+        fps=30.0,
+        points=[(20.0, 20.0), (45.0, 20.0)],
+        direction="exit",
+    )
+
+    overlay_points, summary = _build_tracks_overlay_points_with_heatmap(
+        [],
+        [entry_event, exit_event],
+        {
+            "tracks_overlay_include_heatmap_events": True,
+            "tracks_overlay_heatmap_allowed_directions": ["inside", "entry"],
+        },
+        valid_mask=mask,
+    )
+
+    assert {point.track_id for point in overlay_points} == {20001}
+    assert summary["heatmap_events_added"] == 1
+    assert summary["heatmap_events_rejected_valid_region"] == 1
+
+
+def test_tracks_overlay_heatmap_events_respect_tracking_conditions() -> None:
+    event = HeatmapEvent(
+        event_id=20001,
+        source_fast_event_id=10001,
+        source_track_ids=[],
+        video_id="video",
+        frame_start=0,
+        frame_end=10,
+        fps=30.0,
+        points=[(10.0, 20.0), (11.0, 20.0)],
+        direction="inside",
+    )
+
+    overlay_points, summary = _build_tracks_overlay_points_with_heatmap(
+        [],
+        [event],
+        {"tracks_overlay_include_heatmap_events": True},
+        tracking_cfg={
+            "min_track_length": 1,
+            "min_track_duration_sec": 0.0,
+            "min_track_displacement": 20.0,
+            "min_track_path_length": 20.0,
+            "min_track_straightness": 0.0,
+            "require_start_or_end_in_valid_region": False,
+            "valid_region_gate_dilate_px": 0,
+            "spatial_thresholds_ref_width_px": 0,
+        },
+        frame_width=60,
+    )
+
+    assert overlay_points == []
+    assert summary["heatmap_events_rejected_track_conditions"] == 1
+
+
+def test_tracks_overlay_heatmap_events_reject_winding_geometry() -> None:
+    event = HeatmapEvent(
+        event_id=20001,
+        source_fast_event_id=10001,
+        source_track_ids=[],
+        video_id="video",
+        frame_start=0,
+        frame_end=30,
+        fps=30.0,
+        points=[(0.0, 0.0), (20.0, 35.0), (40.0, 0.0), (60.0, 35.0)],
+        direction="inside",
+    )
+
+    overlay_points, summary = _build_tracks_overlay_points_with_heatmap(
+        [],
+        [event],
+        {
+            "tracks_overlay_include_heatmap_events": True,
+            "tracks_overlay_heatmap_min_straightness": 0.85,
+            "tracks_overlay_heatmap_max_turn_deg": 90.0,
+            "tracks_overlay_heatmap_max_mean_turn_deg": 35.0,
+        },
+    )
+
+    assert overlay_points == []
+    assert summary["heatmap_events_rejected_geometry"] == 1
+
+
+def test_tracks_overlay_heatmap_events_simplify_to_line() -> None:
+    event = HeatmapEvent(
+        event_id=20001,
+        source_fast_event_id=10001,
+        source_track_ids=[],
+        video_id="video",
+        frame_start=0,
+        frame_end=20,
+        fps=30.0,
+        points=[(0.0, 0.0), (10.0, 1.0), (20.0, 0.0)],
+        direction="inside",
+    )
+
+    overlay_points, summary = _build_tracks_overlay_points_with_heatmap(
+        [],
+        [event],
+        {
+            "tracks_overlay_include_heatmap_events": True,
+            "tracks_overlay_heatmap_min_straightness": 0.85,
+            "tracks_overlay_heatmap_simplify_to_line": True,
+        },
+    )
+
+    assert summary["heatmap_events_added"] == 1
+    assert [point.y for point in overlay_points] == [0.0, 0.0, 0.0]
 
 
 def _make_track_point(track_id: int, frame: int, x: float, y: float) -> TrackPoint:

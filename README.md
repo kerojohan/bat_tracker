@@ -106,6 +106,7 @@ Se escriben en la carpeta indicada por `--output`:
 - `tracks_render.json`: export JSON con `width`, `height`, puntos por track y metadatos minimos (`track_id`, `frame_start`, `frame_end`, `duration_sec`, `direction`, `point_start`, `point_end`).
   - `direction` usa el vocabulario `entry`, `exit`, `inside`, `outside`, `unknown`.
 - `tracks_overlay.png`: trayectorias dibujadas sobre `background.png`.
+- `tracks_overlay_tracks_only.png` (opcional): copia del overlay con solo tracks aceptados cuando `output.tracks_overlay_include_heatmap_events` esta activo.
 - `tracks_overlay_raw.png` y `tracks_overlay_smoothed.png` (opcionales): overlays adicionales cuando `output.trajectory_smoothing_enabled` esta activo.
 - `track_clips/` (opcional): clips de video por track (`track_0001_000120-000186.mp4`, etc.).
 - `meta.json`: metadatos del video, parametros efectivos y metricas de ejecucion.
@@ -210,6 +211,11 @@ Usa `config.yaml.example` como base.
   - `output.overlay_draw_track_labels`: dibuja el numero de `track_id` junto al inicio de cada track en `tracks_overlay.png` y `tracks.svg`
   - `output.overlay_draw_track_labels_at_end`: dibuja el numero de `track_id` al final del track en `tracks_overlay.png` y `tracks.svg`
   - `output.overlay_label_font_scale` y `output.overlay_label_thickness`: estilo de etiqueta compartido por `tracks_overlay.png` y `tracks.svg`
+  - `output.tracks_overlay_include_heatmap_events`: integra las rutas de `heatmap_events` en `tracks_overlay.png` solo si tambien pasan los umbrales de track y la direccion permitida frente a la mascara valida; si un evento comparte `source_track_id` con un track aceptado, o cae cerca en tiempo y espacio, lo completa con puntos heatmap sin duplicar frames. Si no encuentra match, se dibuja como track sintetico con `track_id = event_id`. Cuando se activa, tambien se guarda `tracks_overlay_tracks_only.png` con solo los tracks aceptados.
+  - `output.tracks_overlay_heatmap_match_max_gap_frames` y `output.tracks_overlay_heatmap_match_max_distance`: tolerancia temporal/espacial para completar un track aceptado aunque el evento heatmap no comparta `source_track_id`.
+  - `output.tracks_overlay_heatmap_allowed_directions`: direcciones permitidas para integrar heatmap frente a la mascara (`inside`, `entry`, `exit`, `outside`, `unknown`). Por defecto: `inside` y `entry`.
+  - `output.tracks_overlay_heatmap_min_straightness`, `output.tracks_overlay_heatmap_max_turn_deg` y `output.tracks_overlay_heatmap_max_mean_turn_deg`: filtros geometricos para rechazar heatmaps sinuosos tipicos de vegetacion.
+  - `output.tracks_overlay_heatmap_simplify_to_line`: dibuja cada heatmap integrado como una linea recta entre sus extremos para evitar desviaciones del corredor de movimiento.
   - `output.progress_enabled`: muestra trazas de avance global por consola durante todo el pipeline (etapas + frames)
   - `output.progress_step_percent`: porcentaje global entre trazas (1..100, por defecto `5`)
   - `output.export_track_clips`: exporta clips por track en una carpeta

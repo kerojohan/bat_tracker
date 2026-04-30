@@ -912,6 +912,344 @@ def _export_track_clips(
     return clip_paths
 
 
+def _heatmap_event_to_track_points(
+    event,
+    track_id: int,
+) -> List[TrackPoint]:
+    span = max(1, len(event.points) - 1)
+    deduped: Dict[int, TrackPoint] = {}
+    for idx, (x, y) in enumerate(event.points):
+        frame_est = event.frame_start + (event.frame_end - event.frame_start) * idx / span
+        frame = int(round(frame_est))
+        xi = int(round(x))
+        yi = int(round(y))
+        deduped[frame] = TrackPoint(
+            video_id=event.video_id,
+            track_id=track_id,
+            frame=frame,
+            time_sec=frame_est / max(1e-6, float(event.fps)),
+            x=float(x),
+            y=float(y),
+            vx=0.0,
+            vy=0.0,
+            bbox_x1=xi - 1,
+            bbox_y1=yi - 1,
+            bbox_x2=xi + 1,
+            bbox_y2=yi + 1,
+            area=0.0,
+        )
+    return [deduped[frame] for frame in sorted(deduped)]
+
+
+def _select_heatmap_target_track(
+    event,
+    by_track: Dict[int, List[TrackPoint]],
+    output_cfg: Dict,
+) -> int | None:
+    source_track_ids = [int(track_id) for track_id in event.source_track_ids]
+    source_candidates = [track_id for track_id in source_track_ids if track_id in by_track]
+    if source_candidates:
+        return min(
+            source_candidates,
+            key=lambda track_id: _heatmap_track_score(event, by_track[track_id], track_id),
+        )
+
+    max_gap = int(output_cfg.get("tracks_overlay_heatmap_match_max_gap_frames", 12))
+    max_distance = float(output_cfg.get("tracks_overlay_heatmap_match_max_distance", 120.0))
+    if max_gap < 0 or max_distance <= 0.0:
+        return None
+
+    candidates: list[tuple[int, float, int]] = []
+    for track_id, track_points in by_track.items():
+        temporal_gap = _heatmap_track_temporal_gap(event, track_points)
+        if temporal_gap > max_gap:
+            continue
+        distance = _heatmap_track_min_distance(event, track_points)
+        if distance > max_distance:
+            continue
+        candidates.append((temporal_gap, distance, track_id))
+
+    if not candidates:
+        return None
+
+    return min(candidates)[2]
+
+
+def _heatmap_track_score(
+    event,
+    track_points: List[TrackPoint],
+    track_id: int,
+) -> tuple[int, float, int]:
+    frame_start = min(point.frame for point in track_points)
+    frame_end = max(point.frame for point in track_points)
+    overlap = max(
+        0,
+        min(frame_end, event.frame_end) - max(frame_start, event.frame_start) + 1,
+    )
+    return (-overlap, _heatmap_track_min_distance(event, track_points), track_id)
+
+
+def _heatmap_track_temporal_gap(event, track_points: List[TrackPoint]) -> int:
+    frame_start = min(point.frame for point in track_points)
+    frame_end = max(point.frame for point in track_points)
+    if frame_end < event.frame_start:
+        return int(event.frame_start - frame_end)
+    if event.frame_end < frame_start:
+        return int(frame_start - event.frame_end)
+    return 0
+
+
+def _heatmap_track_min_distance(event, track_points: List[TrackPoint]) -> float:
+    if not event.points or not track_points:
+        return float("inf")
+    return min(
+        hypot(point.x - hx, point.y - hy)
+        for point in track_points
+        for hx, hy in event.points
+    )
+
+
+def _completion_heatmap_points(
+    existing_points: List[TrackPoint],
+    heatmap_points: List[TrackPoint],
+) -> List[TrackPoint]:
+    existing_frames = {point.frame for point in existing_points}
+    return [point for point in heatmap_points if point.frame not in existing_frames]
+
+
+def _classify_heatmap_points_direction(points: List[TrackPoint], valid_mask: np.ndarray | None) -> str:
+    if valid_mask is None or not points:
+        return "unknown"
+    track_points = sorted(points, key=lambda point: point.frame)
+    start_inside = _point_in_mask(track_points[0], valid_mask)
+    end_inside = _point_in_mask(track_points[-1], valid_mask)
+    return _classify_direction(start_inside, end_inside)
+
+
+def _heatmap_points_pass_tracking_conditions(
+    points: List[TrackPoint],
+    tracking_cfg: Dict | None,
+    fps: float,
+    frame_width: int | None,
+) -> bool:
+    if tracking_cfg is None:
+        return True
+    filtered, _assessments = _filter_track_points(
+        points,
+        tracking_cfg,
+        fps,
+        valid_mask=None,
+        frame_width=frame_width,
+    )
+    return bool(filtered)
+
+
+def _heatmap_points_pass_valid_region(
+    points: List[TrackPoint],
+    valid_mask: np.ndarray | None,
+    output_cfg: Dict,
+) -> bool:
+    if valid_mask is None:
+        return True
+    allowed_directions = {
+        str(direction)
+        for direction in output_cfg.get("tracks_overlay_heatmap_allowed_directions", ["inside", "entry"])
+    }
+    return _classify_heatmap_points_direction(points, valid_mask) in allowed_directions
+
+
+def _heatmap_turn_angles_deg(points: List[TrackPoint]) -> list[float]:
+    angles: list[float] = []
+    sorted_points = sorted(points, key=lambda point: point.frame)
+    for p0, p1, p2 in zip(sorted_points, sorted_points[1:], sorted_points[2:]):
+        v0 = (p1.x - p0.x, p1.y - p0.y)
+        v1 = (p2.x - p1.x, p2.y - p1.y)
+        n0 = hypot(v0[0], v0[1])
+        n1 = hypot(v1[0], v1[1])
+        if n0 <= 1e-6 or n1 <= 1e-6:
+            continue
+        cos_v = max(-1.0, min(1.0, (v0[0] * v1[0] + v0[1] * v1[1]) / (n0 * n1)))
+        angles.append(float(np.degrees(np.arccos(cos_v))))
+    return angles
+
+
+def _heatmap_points_pass_geometry(points: List[TrackPoint], output_cfg: Dict) -> bool:
+    if len(points) < 2:
+        return False
+    track_points = sorted(points, key=lambda point: point.frame)
+    displacement = hypot(
+        track_points[-1].x - track_points[0].x,
+        track_points[-1].y - track_points[0].y,
+    )
+    path_length = _path_length(track_points)
+    straightness = displacement / path_length if path_length > 0 else 0.0
+    min_straightness = float(output_cfg.get("tracks_overlay_heatmap_min_straightness", 0.85))
+    if straightness < min_straightness:
+        return False
+
+    angles = _heatmap_turn_angles_deg(track_points)
+    max_turn = float(output_cfg.get("tracks_overlay_heatmap_max_turn_deg", 90.0))
+    if max_turn > 0.0 and angles and max(angles) > max_turn:
+        return False
+    max_mean_turn = float(output_cfg.get("tracks_overlay_heatmap_max_mean_turn_deg", 35.0))
+    if max_mean_turn > 0.0 and angles and sum(angles) / len(angles) > max_mean_turn:
+        return False
+    return True
+
+
+def _simplify_heatmap_points_to_line(points: List[TrackPoint]) -> List[TrackPoint]:
+    if len(points) <= 2:
+        return points
+    sorted_points = sorted(points, key=lambda point: point.frame)
+    start = sorted_points[0]
+    end = sorted_points[-1]
+    frame_span = max(1, end.frame - start.frame)
+    line_points: list[TrackPoint] = []
+    for point in sorted_points:
+        t = (point.frame - start.frame) / float(frame_span)
+        x = start.x + (end.x - start.x) * t
+        y = start.y + (end.y - start.y) * t
+        xi = int(round(x))
+        yi = int(round(y))
+        line_points.append(
+            TrackPoint(
+                video_id=point.video_id,
+                track_id=point.track_id,
+                frame=point.frame,
+                time_sec=point.time_sec,
+                x=float(x),
+                y=float(y),
+                vx=point.vx,
+                vy=point.vy,
+                bbox_x1=xi - 1,
+                bbox_y1=yi - 1,
+                bbox_x2=xi + 1,
+                bbox_y2=yi + 1,
+                area=point.area,
+            )
+        )
+    return line_points
+
+
+def _prepare_heatmap_overlay_points(
+    event,
+    track_id: int,
+    output_cfg: Dict,
+) -> List[TrackPoint]:
+    event_points = _heatmap_event_to_track_points(event, track_id)
+    if bool(output_cfg.get("tracks_overlay_heatmap_simplify_to_line", True)):
+        return _simplify_heatmap_points_to_line(event_points)
+    return event_points
+
+
+def _next_heatmap_overlay_track_id(event_id: int, used_track_ids: set[int]) -> int:
+    track_id = int(event_id)
+    while track_id in used_track_ids:
+        track_id += 1
+    used_track_ids.add(track_id)
+    return track_id
+
+
+def _build_tracks_overlay_points_with_heatmap(
+    points: List[TrackPoint],
+    heatmap_events: list,
+    output_cfg: Dict,
+    *,
+    tracking_cfg: Dict | None = None,
+    valid_mask: np.ndarray | None = None,
+    frame_width: int | None = None,
+    starting_used_track_ids: set[int] | None = None,
+) -> tuple[List[TrackPoint], Dict]:
+    summary = {
+        "heatmap_overlay_enabled": bool(output_cfg.get("tracks_overlay_include_heatmap_events", False)),
+        "heatmap_events_completed": 0,
+        "heatmap_events_added": 0,
+        "heatmap_events_matched_without_new_points": 0,
+        "heatmap_events_rejected_track_conditions": 0,
+        "heatmap_events_rejected_valid_region": 0,
+        "heatmap_events_rejected_geometry": 0,
+        "heatmap_completed_track_ids": [],
+        "heatmap_added_track_ids": [],
+        "heatmap_rejected_track_condition_event_ids": [],
+        "heatmap_rejected_valid_region_event_ids": [],
+        "heatmap_rejected_geometry_event_ids": [],
+        "heatmap_matched_without_new_points_event_ids": [],
+    }
+    if not bool(output_cfg.get("tracks_overlay_include_heatmap_events", False)):
+        return points, summary
+    if not heatmap_events:
+        return points, summary
+
+    by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
+    for point in points:
+        by_track[point.track_id].append(point)
+    for track_id in by_track:
+        by_track[track_id] = sorted(by_track[track_id], key=lambda point: point.frame)
+
+    used_track_ids = set(by_track.keys())
+    if starting_used_track_ids:
+        used_track_ids.update(starting_used_track_ids)
+    completed_ids: set[int] = set()
+    added_ids: set[int] = set()
+    completed_events = 0
+    added_events = 0
+    matched_without_new_points = 0
+
+    for event in heatmap_events:
+        candidate_points = _heatmap_event_to_track_points(event, event.event_id)
+        if not _heatmap_points_pass_tracking_conditions(
+            candidate_points,
+            tracking_cfg,
+            float(event.fps),
+            frame_width,
+        ):
+            summary["heatmap_events_rejected_track_conditions"] += 1
+            summary["heatmap_rejected_track_condition_event_ids"].append(int(event.event_id))
+            continue
+        if not _heatmap_points_pass_geometry(candidate_points, output_cfg):
+            summary["heatmap_events_rejected_geometry"] += 1
+            summary["heatmap_rejected_geometry_event_ids"].append(int(event.event_id))
+            continue
+        if not _heatmap_points_pass_valid_region(candidate_points, valid_mask, output_cfg):
+            summary["heatmap_events_rejected_valid_region"] += 1
+            summary["heatmap_rejected_valid_region_event_ids"].append(int(event.event_id))
+            continue
+
+        target_track_id = _select_heatmap_target_track(event, by_track, output_cfg)
+        if target_track_id is not None:
+            event_points = _prepare_heatmap_overlay_points(event, target_track_id, output_cfg)
+            completion_points = _completion_heatmap_points(by_track[target_track_id], event_points)
+            if completion_points:
+                by_track[target_track_id].extend(completion_points)
+                by_track[target_track_id].sort(key=lambda point: point.frame)
+                completed_ids.add(target_track_id)
+                completed_events += 1
+            else:
+                matched_without_new_points += 1
+                summary["heatmap_matched_without_new_points_event_ids"].append(int(event.event_id))
+            continue
+
+        synthetic_track_id = _next_heatmap_overlay_track_id(event.event_id, used_track_ids)
+        event_points = _prepare_heatmap_overlay_points(event, synthetic_track_id, output_cfg)
+        if not event_points:
+            continue
+        by_track[synthetic_track_id].extend(event_points)
+        added_ids.add(synthetic_track_id)
+        added_events += 1
+
+    overlay_points = [
+        point
+        for track_id in sorted(by_track)
+        for point in sorted(by_track[track_id], key=lambda point: point.frame)
+    ]
+    summary["heatmap_events_completed"] = completed_events
+    summary["heatmap_events_added"] = added_events
+    summary["heatmap_events_matched_without_new_points"] = matched_without_new_points
+    summary["heatmap_completed_track_ids"] = sorted(completed_ids)
+    summary["heatmap_added_track_ids"] = sorted(added_ids)
+    return overlay_points, summary
+
+
 def run_pipeline(input_video: str, output_dir: str, config_path: str | None = None) -> Dict:
     pipeline_started = perf_counter()
     cfg = load_config(config_path)
@@ -1253,11 +1591,36 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     overlay_lbl_end = bool(cfg["output"].get("overlay_draw_track_labels_at_end", False))
     overlay_lbl_scale = float(cfg["output"].get("overlay_label_font_scale", 0.5))
     overlay_lbl_th = int(cfg["output"].get("overlay_label_thickness", 1))
+    overlay_include_heatmap_events = bool(cfg["output"].get("tracks_overlay_include_heatmap_events", False))
+    overlay_tracks_only_path = out_dir / "tracks_overlay_tracks_only.png"
+    overlay_tracks_only_written = False
+    overlay_points, tracks_overlay_heatmap_meta = _build_tracks_overlay_points_with_heatmap(
+        filtered_points,
+        heatmap_events,
+        cfg["output"],
+        tracking_cfg=cfg["tracking"],
+        valid_mask=valid_gate_mask,
+        frame_width=int(meta.width),
+    )
+    if overlay_include_heatmap_events and heatmap_events:
+        overlay_tracks_only = render_tracks_overlay(
+            background_gray=background,
+            points=filtered_points,
+            line_thickness=overlay_line_t,
+            start_radius=overlay_start_r,
+            alpha=overlay_alpha_v,
+            draw_track_labels=overlay_lbl,
+            draw_track_labels_at_end=overlay_lbl_end,
+            label_font_scale=overlay_lbl_scale,
+            label_thickness=overlay_lbl_th,
+        )
+        cv2.imwrite(str(overlay_tracks_only_path), overlay_tracks_only)
+        overlay_tracks_only_written = True
 
     if smoothed_points is not None:
         overlay_raw = render_tracks_overlay(
             background_gray=background,
-            points=filtered_points,
+            points=overlay_points,
             line_thickness=overlay_line_t,
             start_radius=overlay_start_r,
             alpha=overlay_alpha_v,
@@ -1269,7 +1632,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         cv2.imwrite(str(out_dir / "tracks_overlay_raw.png"), overlay_raw)
         overlay_smoothed = render_tracks_overlay(
             background_gray=background,
-            points=smoothed_points,
+            points=smooth_track_points(overlay_points, ts_window),
             line_thickness=overlay_line_t,
             start_radius=overlay_start_r,
             alpha=overlay_alpha_v,
@@ -1283,7 +1646,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     else:
         overlay = render_tracks_overlay(
             background_gray=background,
-            points=filtered_points,
+            points=overlay_points,
             line_thickness=overlay_line_t,
             start_radius=overlay_start_r,
             alpha=overlay_alpha_v,
@@ -1323,6 +1686,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         overlay_smoothing_paths = {
             "tracks_overlay_raw_png": str((out_dir / "tracks_overlay_raw.png").resolve()),
             "tracks_overlay_smoothed_png": str((out_dir / "tracks_overlay_smoothed.png").resolve()),
+        }
+    overlay_event_paths: Dict[str, str] = {}
+    if overlay_tracks_only_written:
+        overlay_event_paths = {
+            "tracks_overlay_tracks_only_png": str(overlay_tracks_only_path.resolve()),
         }
 
     st_scale, st_disp_eff, st_path_eff = _effective_min_track_spatial_thresholds(
@@ -1383,6 +1751,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
                 else ""
             ),
             **overlay_smoothing_paths,
+            **overlay_event_paths,
             **fast_event_outputs,
             **heatmap_event_outputs,
             "track_clips": track_clip_outputs,
@@ -1414,6 +1783,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "events_total": len(heatmap_events),
             "source_fast_events_total": len({event.source_fast_event_id for event in heatmap_events}),
         },
+        "tracks_overlay": tracks_overlay_heatmap_meta,
     }
 
     meta_path = out_dir / "meta.json"

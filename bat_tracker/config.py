@@ -159,6 +159,14 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "overlay_draw_track_labels_at_end": False,
         "overlay_label_font_scale": 0.5,
         "overlay_label_thickness": 1,
+        "tracks_overlay_include_heatmap_events": False,
+        "tracks_overlay_heatmap_match_max_gap_frames": 12,
+        "tracks_overlay_heatmap_match_max_distance": 120.0,
+        "tracks_overlay_heatmap_allowed_directions": ["inside", "entry"],
+        "tracks_overlay_heatmap_min_straightness": 0.85,
+        "tracks_overlay_heatmap_max_turn_deg": 90.0,
+        "tracks_overlay_heatmap_max_mean_turn_deg": 35.0,
+        "tracks_overlay_heatmap_simplify_to_line": True,
         "progress_enabled": True,
         "progress_step_percent": 5,
         "export_track_clips": False,
@@ -222,6 +230,45 @@ def _validate_config(cfg: Dict[str, Any]) -> None:
         raise ValueError(
             f"output.progress_step_percent must be between 1 and 100, got: {progress_step_percent}"
         )
+    overlay_heatmap_gap = int(output.get("tracks_overlay_heatmap_match_max_gap_frames", 12))
+    if overlay_heatmap_gap < 0:
+        raise ValueError(
+            "output.tracks_overlay_heatmap_match_max_gap_frames must be >= 0, "
+            f"got: {overlay_heatmap_gap}"
+        )
+    overlay_heatmap_distance = float(output.get("tracks_overlay_heatmap_match_max_distance", 120.0))
+    if overlay_heatmap_distance < 0.0:
+        raise ValueError(
+            "output.tracks_overlay_heatmap_match_max_distance must be >= 0, "
+            f"got: {overlay_heatmap_distance}"
+        )
+    overlay_heatmap_dirs = output.get("tracks_overlay_heatmap_allowed_directions", ["inside", "entry"])
+    if not isinstance(overlay_heatmap_dirs, list) or not overlay_heatmap_dirs:
+        raise ValueError("output.tracks_overlay_heatmap_allowed_directions must be a non-empty list")
+    valid_overlay_heatmap_dirs = {"inside", "entry", "exit", "outside", "unknown"}
+    invalid_overlay_heatmap_dirs = [
+        str(direction)
+        for direction in overlay_heatmap_dirs
+        if str(direction) not in valid_overlay_heatmap_dirs
+    ]
+    if invalid_overlay_heatmap_dirs:
+        raise ValueError(
+            "output.tracks_overlay_heatmap_allowed_directions contains invalid values: "
+            f"{invalid_overlay_heatmap_dirs}; allowed: {sorted(valid_overlay_heatmap_dirs)}"
+        )
+    overlay_heatmap_straightness = float(output.get("tracks_overlay_heatmap_min_straightness", 0.85))
+    if overlay_heatmap_straightness < 0.0 or overlay_heatmap_straightness > 1.0:
+        raise ValueError(
+            "output.tracks_overlay_heatmap_min_straightness must be between 0 and 1, "
+            f"got: {overlay_heatmap_straightness}"
+        )
+    for key in (
+        "tracks_overlay_heatmap_max_turn_deg",
+        "tracks_overlay_heatmap_max_mean_turn_deg",
+    ):
+        value = float(output.get(key, 0.0))
+        if value < 0.0:
+            raise ValueError(f"output.{key} must be >= 0, got: {value}")
 
     valid_region = cfg.get("valid_region", {})
     if not isinstance(valid_region, dict):
