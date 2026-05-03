@@ -10,11 +10,12 @@ Proyecto Python para Linux orientado a CPU (con opcion CUDA cuando esta disponib
 - `tracks.svg`: artefacto vectorial autocontenido con las trayectorias 2D en coordenadas originales
 - `tracks_render.json`: geometria normalizada por track para consumo externo
 - `tracks_overlay.png`: trayectorias sobre el fondo
+- `flight_trails_overlay.mp4` (opcional): estelas temporales en tiempo real sobre el video original
 - `fast_events.csv` y `fast_tracks.csv` (opcional): reconstruccion de eventos rapidos uniendo candidatos aceptados y rechazados
 - `heatmap_events.csv` y `heatmap_tracks.csv` (opcional): reconstruccion cinemática de esos eventos desde heatmaps de movimiento
 - `meta.json`: parametros y metricas de ejecucion
 
-No genera video anotado y no usa modelos entrenados.
+Por defecto no genera video anotado y no usa modelos entrenados.
 
 ## Instalacion
 
@@ -107,6 +108,7 @@ Se escriben en la carpeta indicada por `--output`:
   - `direction` usa el vocabulario `entry`, `exit`, `inside`, `outside`, `unknown`.
 - `tracks_overlay.png`: trayectorias dibujadas sobre `background.png`.
 - `tracks_overlay_raw.png` y `tracks_overlay_smoothed.png` (opcionales): overlays adicionales cuando `output.trajectory_smoothing_enabled` esta activo.
+- `flight_trails_overlay.mp4` (opcional): video con estelas temporales superpuestas sobre el video original cuando `flight_trails.enabled` esta activo.
 - `track_clips/` (opcional): clips de video por track (`track_0001_000120-000186.mp4`, etc.).
 - `meta.json`: metadatos del video, parametros efectivos y metricas de ejecucion.
   - incluye bloques `video`, `parameters`, `background`, `valid_region`, `metrics`, `execution`, `performance`, `outputs`, `trajectory_smoothing` y `postprocess`.
@@ -136,8 +138,9 @@ Columnas exactas:
 6. Tracking 2D frame a frame con asignacion greedy por distancia maxima y prediccion por velocidad para reducir cortes.
 7. Merge automatico opcional de tracks fragmentados antes del filtrado final.
 8. Evaluacion centralizada de tracks candidatos (score + motivos de rechazo) y export de `tracks.csv`, `events.csv`, `tracks.svg`, `tracks_render.json` y render final `tracks_overlay.png`.
-9. Si `valid_region.enabled`, calculo de banda vertical valida desde iluminacion horizontal y guardado en `valid_region/*`.
-10. Export de `meta.json` con parametros, metadatos y metricas.
+9. Export opcional de `flight_trails_overlay.mp4` con estelas temporales acumuladas sobre el video original si `flight_trails.enabled`.
+10. Si `valid_region.enabled`, calculo de banda vertical valida desde iluminacion horizontal y guardado en `valid_region/*`.
+11. Export de `meta.json` con parametros, metadatos y metricas.
    - incluye `postprocess.auto_merges_applied` cuando `tracking.auto_merge_suggested` esta activo.
    - incluye `trajectory_smoothing.enabled/window` y rutas extra de overlay cuando el suavizado esta activado.
 
@@ -186,6 +189,14 @@ Usa `config.yaml.example` como base.
   - `heatmap_events.threshold/percentile`: sensibilidad del heatmap inter-frame.
   - `heatmap_events.corridor_width/bins`: anchura del corredor y resolucion de la ruta extraida.
   - `heatmap_events.seed_y_min/y_max`: limites para evitar que ruido de bordes deforme la ruta.
+- `flight_trails.*`: export opcional de video con estelas temporales sobre el video original
+  - `flight_trails.enabled`: activa `flight_trails_overlay.mp4`; por defecto esta desactivado.
+  - `flight_trails.video_filename`: nombre del fichero mp4 generado dentro del directorio de salida.
+  - `flight_trails.history_frames` y `flight_trails.max_track_gap_frames`: memoria temporal por track antes de cortar una estela.
+  - `flight_trails.decay`: factor de desvanecimiento del mapa acumulativo entre frames.
+  - `flight_trails.segment_thickness` y `flight_trails.point_radius`: grosor visual de la estela y del punto mas reciente.
+  - `flight_trails.overlay_alpha` y `flight_trails.colormap`: mezcla del overlay y mapa de color aplicado al heatmap.
+  - `flight_trails.min_*` y `flight_trails.stationary_radius_px`: filtros para exigir trayectorias coherentes y rechazar jitter/movimiento local persistente.
 - `valid_region.*`: mascara vertical valida para eliminar vignette lateral IR sin recortar interior oscuro de cueva
   - `valid_region.enabled`: activa/desactiva etapa
   - `valid_region.method`: `horizontal_illumination_profile` (default), `central_deep_layer` o `hybrid_deep_layer_profile` (perfil primero y profundidad despues, sin laterales)

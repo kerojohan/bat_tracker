@@ -34,6 +34,7 @@ from .perf import PerformanceCollector
 from .render import export_tracks_render_json, export_tracks_svg, render_tracks_overlay
 from .track_smoothing import smooth_track_points
 from .tracker import GreedyTracker, TrackPoint
+from .trails import export_realtime_trails_video
 from .valid_region import load_image as load_valid_region_image
 from .valid_region import load_mask as load_valid_region_mask
 from .valid_region import run_valid_region
@@ -920,6 +921,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     export_track_clips_enabled = bool(cfg["output"].get("export_track_clips", False))
     fast_events_enabled = bool(cfg.get("fast_events", {}).get("enabled", False))
     heatmap_events_enabled = bool(cfg.get("heatmap_events", {}).get("enabled", False))
+    flight_trails_enabled = bool(cfg.get("flight_trails", {}).get("enabled", False))
     progress = ProgressReporter(
         enabled=bool(cfg["output"].get("progress_enabled", True)),
         step_percent=int(cfg["output"].get("progress_step_percent", 5)),
@@ -931,6 +933,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             ("fast_events", 6.0 if fast_events_enabled else 0.0),
             ("heatmap_events", 8.0 if heatmap_events_enabled else 0.0),
             ("exports_core", 12.0),
+            ("flight_trails", 12.0 if flight_trails_enabled else 0.0),
             ("track_clips", 10.0 if export_track_clips_enabled else 0.0),
         ],
     )
@@ -1273,6 +1276,22 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     cv2.imwrite(str(overlay_path), overlay)
     progress.complete_stage("exports_core", detail="csv and overlay exported")
 
+    flight_trails_output = ""
+    if flight_trails_enabled:
+        progress.start_stage("flight_trails")
+        trail_points = smoothed_points if smoothed_points is not None else filtered_points
+        trail_video_name = str(cfg.get("flight_trails", {}).get("video_filename", "flight_trails_overlay.mp4"))
+        trail_video_path = out_dir / trail_video_name
+        flight_trails_output = export_realtime_trails_video(
+            input_video=input_video,
+            output_path=trail_video_path,
+            points=trail_points,
+            frame_size=(meta.width, meta.height),
+            fps=meta.fps,
+            cfg=cfg.get("flight_trails", {}),
+        )
+        progress.complete_stage("flight_trails", detail="trail video exported")
+
     track_clip_outputs: Dict[str, str] = {}
     if export_track_clips_enabled:
         progress.start_stage("track_clips")
@@ -1342,6 +1361,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "tracks_svg": str(tracks_svg_path.resolve()),
             "tracks_render_json": str(tracks_render_json_path.resolve()),
             "tracks_overlay_png": str(overlay_path.resolve()),
+            "flight_trails_overlay_video": flight_trails_output,
             "track_candidates_csv": (
                 str(track_candidates_csv_path.resolve())
                 if bool(cfg["tracking"].get("export_track_candidates", False))
@@ -1377,6 +1397,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "enabled": heatmap_events_enabled,
             "events_total": len(heatmap_events),
             "source_fast_events_total": len({event.source_fast_event_id for event in heatmap_events}),
+        },
+        "flight_trails": {
+            "enabled": flight_trails_enabled,
+            "source_track_points": len(smoothed_points) if smoothed_points is not None else len(filtered_points),
+            "output_video": flight_trails_output,
         },
     }
 

@@ -12,6 +12,7 @@ import yaml
 from bat_tracker.pipeline import _auto_merge_track_points, run_pipeline
 from bat_tracker.render import export_tracks_render_json, export_tracks_svg
 from bat_tracker.tracker import TrackPoint
+from bat_tracker.trails import RealTimeTrailRenderer
 
 
 SVG_NS = {"svg": "http://www.w3.org/2000/svg"}
@@ -34,6 +35,16 @@ def _write_video(path: Path, frames: list[np.ndarray], fps: int = 10) -> None:
 def _read_tracks(path: Path) -> list[dict[str, str]]:
     with path.open(newline="", encoding="utf-8") as handle:
         return list(csv.DictReader(handle))
+
+
+def _read_video_frame(path: Path, frame_idx: int) -> np.ndarray:
+    cap = cv2.VideoCapture(str(path))
+    assert cap.isOpened(), f"could not open video {path}"
+    cap.set(cv2.CAP_PROP_POS_FRAMES, float(frame_idx))
+    ok, frame = cap.read()
+    cap.release()
+    assert ok, f"could not read frame {frame_idx} from {path}"
+    return frame
 
 
 def _base_config() -> dict:
@@ -181,6 +192,77 @@ def test_pipeline_exports_svg_and_render_json_from_in_memory_tracks(tmp_path: Pa
     assert {label.text for label in labels} == {"1"}
     assert meta["outputs"]["tracks_svg"] == str((out_dir / "tracks.svg").resolve())
     assert meta["outputs"]["tracks_render_json"] == str((out_dir / "tracks_render.json").resolve())
+    assert meta["outputs"]["flight_trails_overlay_video"] == ""
+
+
+def test_realtime_trails_keep_coherent_motion_and_reject_local_jitter() -> None:
+    renderer = RealTimeTrailRenderer(
+        (80, 80),
+        {
+            "enabled": True,
+            "history_frames": 6,
+            "decay": 0.92,
+            "segment_thickness": 3,
+            "overlay_alpha": 0.75,
+            "min_history_points": 3,
+            "min_segment_displacement_px": 4.0,
+            "min_recent_displacement_px": 10.0,
+            "min_recent_path_length_px": 12.0,
+            "min_recent_straightness": 0.4,
+            "stationary_radius_px": 10.0,
+        },
+    )
+
+    jitter_xy = [(55, 55), (56, 54), (55, 56), (54, 55), (56, 55)]
+    out = np.zeros((80, 80, 3), dtype=np.uint8)
+    for frame in range(5):
+        out = renderer.update(
+            np.zeros((80, 80, 3), dtype=np.uint8),
+            [
+                _make_track_point(1, frame, 8 + frame * 12, 20 + frame * 6),
+                _make_track_point(2, frame, jitter_xy[frame][0], jitter_xy[frame][1]),
+            ],
+        )
+
+    moving_energy = int(out[10:50, 5:65].sum())
+    jitter_energy = int(out[48:62, 48:62].sum())
+    assert moving_energy > 0
+    assert jitter_energy * 4 < moving_energy
+
+
+def test_pipeline_exports_realtime_trails_video_when_enabled(tmp_path: Path) -> None:
+    video_path = _make_single_track_video(tmp_path)
+
+    cfg = _base_config()
+    cfg["flight_trails"] = {
+        "enabled": True,
+        "video_filename": "flight_trails_overlay.mp4",
+        "history_frames": 6,
+        "decay": 0.92,
+        "segment_thickness": 3,
+        "point_radius": 2,
+        "overlay_alpha": 0.75,
+        "min_history_points": 3,
+        "min_segment_displacement_px": 3.0,
+        "min_recent_displacement_px": 8.0,
+        "min_recent_path_length_px": 10.0,
+        "min_recent_straightness": 0.4,
+        "stationary_radius_px": 8.0,
+    }
+    cfg_path = tmp_path / "cfg_trails.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    out_dir = tmp_path / "out_trails"
+    meta = run_pipeline(str(video_path), str(out_dir), str(cfg_path))
+
+    trail_video = out_dir / "flight_trails_overlay.mp4"
+    assert trail_video.exists()
+    assert meta["outputs"]["flight_trails_overlay_video"] == str(trail_video.resolve())
+
+    source_frame = _read_video_frame(video_path, 4)
+    overlay_frame = _read_video_frame(trail_video, 4)
+    assert overlay_frame.shape == source_frame.shape
+    assert int(np.abs(overlay_frame.astype(np.int16) - source_frame.astype(np.int16)).sum()) > 0
 
 
 def test_svg_and_render_json_export_empty_tracks_as_valid_empty_documents(tmp_path: Path) -> None:
