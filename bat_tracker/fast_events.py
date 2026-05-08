@@ -388,7 +388,9 @@ def _group_fast_track_ids(
                     union(a_id, b_id)
             else:
                 if _min_endpoint_distance(a, b) <= max_endpoint_distance:
-                    union(a_id, b_id)
+                    gap_cos = _endpoint_gap_cosine(a, b)
+                    if gap_cos is None or gap_cos > 0.5:
+                        union(a_id, b_id)
 
     groups_by_root: dict[int, list[int]] = defaultdict(list)
     for track_id in track_ids:
@@ -609,6 +611,32 @@ def _min_endpoint_distance(a: list[TrackPoint], b: list[TrackPoint]) -> float:
     endpoints_a = (a[0], a[-1])
     endpoints_b = (b[0], b[-1])
     return min(hypot(pa.x - pb.x, pa.y - pb.y) for pa in endpoints_a for pb in endpoints_b)
+
+
+def _endpoint_gap_cosine(a: list[TrackPoint], b: list[TrackPoint]) -> float | None:
+    a_end, a_start = a[-1], a[0]
+    b_end, b_start = b[-1], b[0]
+    if a_end.frame < b_start.frame:
+        gap_vec = (b_start.x - a_end.x, b_start.y - a_end.y)
+        a_vec = (a_end.x - a_start.x, a_end.y - a_start.y)
+        if a_vec[0] == 0 and a_vec[1] == 0:
+            return None
+        n_gap = (gap_vec[0]**2 + gap_vec[1]**2)**0.5
+        n_a = (a_vec[0]**2 + a_vec[1]**2)**0.5
+        if n_gap < 1e-6 or n_a < 1e-6:
+            return None
+        return (gap_vec[0]*a_vec[0] + gap_vec[1]*a_vec[1]) / (n_gap * n_a)
+    elif b_end.frame < a_start.frame:
+        gap_vec = (a_start.x - b_end.x, a_start.y - b_end.y)
+        b_vec = (b_end.x - b_start.x, b_end.y - b_start.y)
+        if b_vec[0] == 0 and b_vec[1] == 0:
+            return None
+        n_gap = (gap_vec[0]**2 + gap_vec[1]**2)**0.5
+        n_b = (b_vec[0]**2 + b_vec[1]**2)**0.5
+        if n_gap < 1e-6 or n_b < 1e-6:
+            return None
+        return (gap_vec[0]*b_vec[0] + gap_vec[1]*b_vec[1]) / (n_gap * n_b)
+    return None
 
 
 def _mean_overlap_distance(a: list[TrackPoint], b: list[TrackPoint]) -> float | None:

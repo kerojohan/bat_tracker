@@ -773,7 +773,7 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
             if gap <= max_gap and dist <= max_endpoint_dist:
                 gap_vec = (b_start.x - a_end.x, b_start.y - a_end.y)
                 gap_cos = _vector_cosine(a_end_vec, gap_vec)
-                if gap_cos is None or gap_cos > 0.0:
+                if gap_cos is None or gap_cos > 0.5:
                     reason = "handoff"
                     reason_data = {"gap_frames": gap, "endpoint_distance": dist, "direction_cosine": gap_cos or 1.0}
         elif b_end.frame < a_start.frame:
@@ -782,7 +782,7 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
             if gap <= max_gap and dist <= max_endpoint_dist:
                 gap_vec = (a_start.x - b_end.x, a_start.y - b_end.y)
                 gap_cos = _vector_cosine(b_end_vec, gap_vec)
-                if gap_cos is None or gap_cos > 0.0:
+                if gap_cos is None or gap_cos > 0.5:
                     reason = "handoff"
                     reason_data = {"gap_frames": gap, "endpoint_distance": dist, "direction_cosine": gap_cos or 1.0}
         else:

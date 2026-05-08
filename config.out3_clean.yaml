@@ -142,8 +142,8 @@ fast_events:
   min_source_mean_speed: 80.0
   min_source_straightness: 0.08
   max_source_duration_sec: 5.0
-  max_group_gap_frames: 45
-  max_group_endpoint_distance: 260.0
+  max_group_gap_frames: 5
+  max_group_endpoint_distance: 100.0
   max_group_overlap_distance: 100.0
   min_event_points: 2
   min_event_displacement: 80.0
