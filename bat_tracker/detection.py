@@ -119,6 +119,7 @@ class DetectionContext:
     process_y0: int
     process_y1: int
     process_area: int
+    normalize_diff: bool = False
 
 
 def build_detection_context(background: np.ndarray, cfg: dict) -> DetectionContext:
@@ -198,6 +199,7 @@ def build_detection_context(background: np.ndarray, cfg: dict) -> DetectionConte
         process_y0=process_y0,
         process_y1=process_y1,
         process_area=max(1, (process_x1 - process_x0) * (process_y1 - process_y0)),
+        normalize_diff=bool(cfg.get("normalize_diff", False)),
     )
 
 def _prepare_frame(
@@ -265,6 +267,14 @@ def _binary_cpu(
     diff = cv2.absdiff(frame_proc, bg_proc, dst=ctx.diff_buf)
     if perf is not None:
         perf.record("background_absdiff", perf_counter() - absdiff_started, frame_idx=frame_idx)
+
+    if ctx.normalize_diff:
+        diff_float = diff.astype(np.float32)
+        nonzero = diff_float[diff_float > 0]
+        if len(nonzero) > 0:
+            vmax = float(np.percentile(nonzero, 99))
+            if vmax > 1.0:
+                diff = np.clip(diff_float * (255.0 / vmax), 0, 255).astype(np.uint8)
 
     threshold_started = perf_counter()
     if threshold_mode == "otsu":

@@ -45,6 +45,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "highpass_enabled": False,
         "highpass_kernel": 15,
         "highpass_strength": 1.5,
+        "normalize_frame": False,
+        "normalize_diff": False,
         "dedup_proximity_px": 30.0,
     },
     "tracking": {
