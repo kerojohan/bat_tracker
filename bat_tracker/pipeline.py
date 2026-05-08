@@ -1783,6 +1783,31 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     )
     all_tracks_overlay_path = out_dir / "tracks_all_overlay.png"
     cv2.imwrite(str(all_tracks_overlay_path), all_tracks_overlay)
+
+    if fast_events:
+        event_points: List[TrackPoint] = []
+        for event in fast_events:
+            for i, tp in enumerate(event.points):
+                event_points.append(TrackPoint(
+                    video_id=tp.video_id, track_id=event.event_id,
+                    frame=tp.frame, time_sec=tp.time_sec,
+                    x=tp.x, y=tp.y, vx=tp.vx, vy=tp.vy,
+                    bbox_x1=tp.bbox_x1, bbox_y1=tp.bbox_y1,
+                    bbox_x2=tp.bbox_x2, bbox_y2=tp.bbox_y2, area=tp.area,
+                ))
+        events_overlay = render_tracks_overlay(
+            background_gray=background,
+            points=event_points,
+            line_thickness=max(3, overlay_line_t),
+            start_radius=max(6, overlay_start_r),
+            alpha=overlay_alpha_v,
+            draw_track_labels=True,
+            draw_track_labels_at_end=True,
+            label_font_scale=overlay_lbl_scale,
+            label_thickness=overlay_lbl_th,
+        )
+        events_overlay_path = out_dir / "tracks_events_overlay.png"
+        cv2.imwrite(str(events_overlay_path), events_overlay)
     progress.complete_stage("exports_core", detail="csv and overlay exported")
 
     flight_trails_output = ""
