@@ -379,14 +379,16 @@ def _group_fast_track_ids(
         a = by_track[a_id]
         for b_id in track_ids[idx + 1:]:
             b = by_track[b_id]
-            if _temporal_gap_frames(a, b) > max_gap_frames:
+            gap = _temporal_gap_frames(a, b)
+            if gap > max_gap_frames:
                 continue
-            if _min_endpoint_distance(a, b) <= max_endpoint_distance:
-                union(a_id, b_id)
-                continue
-            overlap_distance = _mean_overlap_distance(a, b)
-            if overlap_distance is not None and overlap_distance <= max_overlap_distance:
-                union(a_id, b_id)
+            if gap == 0:
+                overlap_distance = _mean_overlap_distance(a, b)
+                if overlap_distance is not None and overlap_distance <= max_overlap_distance:
+                    union(a_id, b_id)
+            else:
+                if _min_endpoint_distance(a, b) <= max_endpoint_distance:
+                    union(a_id, b_id)
 
     groups_by_root: dict[int, list[int]] = defaultdict(list)
     for track_id in track_ids:

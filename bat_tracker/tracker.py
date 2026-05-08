@@ -9,6 +9,72 @@ from scipy.optimize import linear_sum_assignment
 from .detection import Detection
 
 
+class KalmanFilter2D:
+    def __init__(self, dt: float, pos_std: float = 5.0, vel_std: float = 15.0):
+        self.dt = float(dt)
+        self.x = np.zeros((4, 1), dtype=np.float64)
+        self.P = np.eye(4, dtype=np.float64) * 100.0
+        self.F = np.array([
+            [1.0, 0.0, self.dt, 0.0],
+            [0.0, 1.0, 0.0, self.dt],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ], dtype=np.float64)
+        self.H = np.array([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+        ], dtype=np.float64)
+        self._base_Q = np.diag([0.1, 0.1, vel_std, vel_std]).astype(np.float64)
+        self._base_R = np.eye(2, dtype=np.float64) * (pos_std ** 2)
+        self.Q = self._base_Q.copy()
+        self.R = self._base_R.copy()
+        self.initialized = False
+
+    def init(self, x: float, y: float, vx: float = 0.0, vy: float = 0.0):
+        self.x[0, 0] = x
+        self.x[1, 0] = y
+        self.x[2, 0] = vx
+        self.x[3, 0] = vy
+        self.P = np.eye(4, dtype=np.float64) * 50.0
+        self.initialized = True
+
+    def predict(self, bbox_diag: float = 0.0, score: float = 0.5):
+        score_factor = max(0.2, 2.0 - score * 3.0)
+        bbox_factor = 1.0 + bbox_diag * 0.02
+        self.Q = self._base_Q * score_factor * bbox_factor
+        self.x = self.F @ self.x
+        self.P = self.F @ self.P @ self.F.T + self.Q
+
+    def update(self, zx: float, zy: float, bbox_diag: float = 0.0):
+        bbox_factor = 1.0 + bbox_diag * 0.01
+        self.R = self._base_R * bbox_factor
+        z = np.array([[zx], [zy]], dtype=np.float64)
+        y = z - self.H @ self.x
+        S = self.H @ self.P @ self.H.T + self.R
+        K = self.P @ self.H.T @ np.linalg.inv(S)
+        self.x = self.x + K @ y
+        self.P = (np.eye(4) - K @ self.H) @ self.P
+
+    def state(self) -> Tuple[float, float, float, float]:
+        return (float(self.x[0, 0]), float(self.x[1, 0]),
+                float(self.x[2, 0]), float(self.x[3, 0]))
+
+    def position_covariance(self) -> np.ndarray:
+        return self.P[:2, :2].copy()
+
+    def mahalanobis_distance_sq(self, zx: float, zy: float) -> float:
+        z = np.array([[zx], [zy]], dtype=np.float64)
+        y = z - self.H @ self.x
+        S = self.H @ self.P @ self.H.T + self.R
+        try:
+            d2 = float((y.T @ np.linalg.inv(S) @ y)[0, 0])
+        except np.linalg.LinAlgError:
+            dx = zx - self.x[0, 0]
+            dy = zy - self.x[1, 0]
+            d2 = dx * dx + dy * dy
+        return max(0.0, d2)
+
+
 @dataclass
 class TrackPoint:
     video_id: str
@@ -41,6 +107,7 @@ class ActiveTrack:
     last_detection_score: float = 0.0
     consecutive_hits: int = 0
     birth_frame: int = 0
+    kalman: object | None = None
 
 
 @dataclass
@@ -81,6 +148,7 @@ class GreedyTracker:
         two_stage_association_enabled: bool = False,
         two_stage_association_score_threshold: float = 0.4,
         export_debug: bool = False,
+        kalman_enabled: bool = False,
     ):
         self.max_distance = float(max_distance)
         self.max_distance_sq = self.max_distance * self.max_distance
@@ -98,6 +166,8 @@ class GreedyTracker:
         self.two_stage_score_threshold = float(two_stage_association_score_threshold)
         self.export_debug = bool(export_debug)
         self.debug_rows: List[TrackingDebugRow] = []
+        self.kalman_enabled = bool(kalman_enabled)
+        self._dt = 1.0 / max(1e-6, self.fps)
 
     def _adaptive_gate(self, track: ActiveTrack) -> float:
         if not self.adaptive_enabled:
@@ -126,15 +196,22 @@ class GreedyTracker:
         cost = np.full((n_tracks, n_dets), INF, dtype=np.float64)
         for i, track_id in enumerate(track_ids):
             track = self._active[track_id]
-            dt_pred = max(1, frame_idx - track.last_frame) / self.fps
-            pred_x = track.x + track.vx * dt_pred
-            pred_y = track.y + track.vy * dt_pred
             gate = gate_map.get(track_id, self.max_distance)
+            if self.kalman_enabled and track.kalman is not None and track.kalman.initialized:
+                px, py, _, _ = track.kalman.state()
+            else:
+                dt_pred = max(1, frame_idx - track.last_frame) / self.fps
+                px = track.x + track.vx * dt_pred
+                py = track.y + track.vy * dt_pred
             for j_local, j_global in enumerate(det_indices):
                 det = detections[j_global]
-                dx = pred_x - det.x
-                dy = pred_y - det.y
-                d = (dx * dx + dy * dy) ** 0.5
+                if self.kalman_enabled and track.kalman is not None and track.kalman.initialized:
+                    d2 = track.kalman.mahalanobis_distance_sq(det.x, det.y)
+                    d = d2 ** 0.5
+                else:
+                    dx = px - det.x
+                    dy = py - det.y
+                    d = (dx * dx + dy * dy) ** 0.5
                 if d <= gate:
                     cost[i, j_local] = d
 
@@ -151,6 +228,17 @@ class GreedyTracker:
 
     def step(self, frame_idx: int, detections: List[Detection]) -> List[TrackPoint]:
         points: List[TrackPoint] = []
+
+        if self.kalman_enabled:
+            for track in self._active.values():
+                if track.kalman is not None and track.kalman.initialized:
+                    dt = max(1, frame_idx - track.last_frame) * self._dt
+                    track.kalman.dt = dt
+                    bbox_diag = (track.bbox_w * track.bbox_w + track.bbox_h * track.bbox_h) ** 0.5
+                    track.kalman.predict(bbox_diag=bbox_diag, score=track.last_detection_score)
+                    px, py, _, _ = track.kalman.state()
+                    track.x = px
+                    track.y = py
 
         unmatched_track_ids = set(self._active.keys())
         unmatched_det_idxs = set(range(len(detections)))
@@ -211,6 +299,17 @@ class GreedyTracker:
             track.consecutive_hits += 1
             track.last_frame = frame_idx
             track.missed = 0
+
+            if self.kalman_enabled:
+                if track.kalman is None:
+                    track.kalman = KalmanFilter2D(dt=self._dt)
+                    track.kalman.init(det.x, det.y, vx, vy)
+                else:
+                    bbox_diag = (track.bbox_w * track.bbox_w + track.bbox_h * track.bbox_h) ** 0.5
+                    track.kalman.update(det.x, det.y, bbox_diag=bbox_diag)
+                    kx, ky, kvx, kvy = track.kalman.state()
+                    track.x = kx
+                    track.y = ky
 
             if self.export_debug:
                 dt_pred_debug = max(1, frame_idx - track.last_frame + dt_frames) / self.fps
@@ -305,6 +404,10 @@ class GreedyTracker:
             self._next_track_id += 1
             bbox_w = float(det.bbox_x2 - det.bbox_x1)
             bbox_h = float(det.bbox_y2 - det.bbox_y1)
+            kf = None
+            if self.kalman_enabled:
+                kf = KalmanFilter2D(dt=self._dt)
+                kf.init(det.x, det.y)
             self._active[track_id] = ActiveTrack(
                 track_id=track_id,
                 x=det.x,
@@ -319,6 +422,7 @@ class GreedyTracker:
                 last_detection_score=det.score,
                 consecutive_hits=1,
                 birth_frame=frame_idx,
+                kalman=kf,
             )
             if self.export_debug:
                 self.debug_rows.append(

@@ -7,11 +7,11 @@ background:
 detection:
   blur_kernel: 9
   threshold_mode: fixed
-  diff_threshold: 12
+  diff_threshold: 15
   otsu_offset: 0
   morph_open: 3
   morph_close: 3
-  min_area: 8
+  min_area: 12
   max_area: 50000
   max_global_intensity_shift: -1.0
   max_foreground_ratio: 0.06
@@ -25,7 +25,7 @@ detection:
   temporal_burst_trigger_frames: 3
   temporal_burst_cooldown_frames: 24
   clahe_enabled: false
-  ff_diff_enabled: true
+  ff_diff_enabled: false
   opticalflow_enabled: false
   dedup_proximity_px: 80.0
 tracking:
@@ -67,6 +67,7 @@ tracking:
   merge_fast_handoff_projection_tolerance_px: 45
   two_stage_association_enabled: true
   two_stage_association_score_threshold: 0.4
+  kalman_enabled: true
 noise_mask:
   enabled: true
   sample_frames: 200
@@ -132,7 +133,7 @@ output:
   trajectory_smoothing_window: 5
 fast_events:
   enabled: true
-  include_rejected_candidates: true
+  include_rejected_candidates: false
   include_accepted_tracks: true
   first_event_id: 10001
   min_source_track_points: 3
@@ -153,16 +154,16 @@ heatmap_events:
   enabled: true
   first_event_id: 20001
   max_events: 0
-  padding_frames: 0
-  threshold: 14
+  padding_frames: 3
+  threshold: 8
   blur_kernel: 5
-  percentile: 76.0
-  corridor_width: 180.0
+  percentile: 60.0
+  corridor_width: 220.0
   bins: 22
   seed_y_min: -1.0
   y_max: -1.0
-  min_points: 6
-  min_displacement: 80.0
+  min_points: 4
+  min_displacement: 40.0
 flight_trails:
   enabled: true
   video_filename: flight_trails_overlay.mp4
