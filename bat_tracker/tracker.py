@@ -10,7 +10,7 @@ from .detection import Detection
 
 
 class KalmanFilter2D:
-    def __init__(self, dt: float, pos_std: float = 5.0, vel_std: float = 15.0):
+    def __init__(self, dt: float, pos_std: float = 8.0, vel_std: float = 80.0):
         self.dt = float(dt)
         self.x = np.zeros((4, 1), dtype=np.float64)
         self.P = np.eye(4, dtype=np.float64) * 100.0
@@ -210,7 +210,8 @@ class GreedyTracker:
                 if self.kalman_enabled and track.kalman is not None and track.kalman.initialized:
                     d2 = track.kalman.mahalanobis_distance_sq(det.x, det.y)
                     d = d2 ** 0.5
-                    effective_gate = self.kalman_gate
+                    speed_factor = 1.0 + track.speed_px_sec / 400.0
+                    effective_gate = self.kalman_gate * speed_factor
                 else:
                     dx = px - det.x
                     dy = py - det.y
