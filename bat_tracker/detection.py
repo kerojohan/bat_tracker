@@ -10,6 +10,73 @@ import numpy as np
 from .perf import PerformanceCollector
 
 
+class TemporalAccumulator:
+    def __init__(self, cfg: dict, background: np.ndarray, blur_kernel: int, process_roi: tuple):
+        self.enabled = bool(cfg.get("enabled", False))
+        if not self.enabled:
+            return
+        self.window = int(cfg.get("window_frames", 5))
+        self.threshold = int(cfg.get("diff_threshold", 12))
+        self.min_area = float(cfg.get("min_area", 20))
+        self.max_area = float(cfg.get("max_area", 50000))
+        self.morph_open = int(cfg.get("morph_open", 3))
+        self.morph_close = int(cfg.get("morph_close", 5))
+        self.min_aspect = float(cfg.get("min_trail_aspect", 3.0))
+        self.min_trail_len = float(cfg.get("min_trail_length", 60))
+        self._buffer: list[np.ndarray] = []
+        self._blur_kernel = blur_kernel
+        self._x0, self._y0, self._x1, self._y1 = process_roi
+        self._bg_roi = background[self._y0:self._y1, self._x0:self._x1]
+        if blur_kernel > 1 and blur_kernel % 2 == 1:
+            self._bg_roi = cv2.GaussianBlur(self._bg_roi, (blur_kernel, blur_kernel), 0)
+
+    def feed(self, frame_gray: np.ndarray) -> list[Detection]:
+        if not self.enabled:
+            return []
+        frame_roi = frame_gray[self._y0:self._y1, self._x0:self._x1]
+        if self._blur_kernel > 1 and self._blur_kernel % 2 == 1:
+            frame_roi = cv2.GaussianBlur(frame_roi, (self._blur_kernel, self._blur_kernel), 0)
+        diff = cv2.absdiff(frame_roi, self._bg_roi)
+        self._buffer.append(diff)
+        if len(self._buffer) > self.window:
+            self._buffer.pop(0)
+        if len(self._buffer) < self.window:
+            return []
+
+        max_proj = np.max(np.stack(self._buffer), axis=0)
+        _, binary = cv2.threshold(max_proj, self.threshold, 255, cv2.THRESH_BINARY)
+
+        if self.morph_open > 1:
+            k_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.morph_open, self.morph_open))
+            binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, k_open)
+        if self.morph_close > 1:
+            k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (self.morph_close, self.morph_close))
+            binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, k_close)
+
+        contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        detections: list[Detection] = []
+        for cnt in contours:
+            area = float(cv2.contourArea(cnt))
+            if area < self.min_area or area > self.max_area:
+                continue
+            x, y, w, h = cv2.boundingRect(cnt)
+            aspect = max(w, h) / max(1, min(w, h))
+            trail_len = max(w, h)
+            if aspect >= self.min_aspect and trail_len >= self.min_trail_len:
+                M = cv2.moments(cnt)
+                if M["m00"] > 0:
+                    cx = float(M["m10"] / M["m00"]) + self._x0
+                    cy = float(M["m01"] / M["m00"]) + self._y0
+                    detections.append(Detection(
+                        x=cx, y=cy,
+                        bbox_x1=int(x + self._x0), bbox_y1=int(y + self._y0),
+                        bbox_x2=int(x + w + self._x0), bbox_y2=int(y + h + self._y0),
+                        area=area,
+                        score=0.35,
+                    ))
+        return detections
+
+
 @dataclass
 class Detection:
     x: float
@@ -19,6 +86,7 @@ class Detection:
     bbox_x2: int
     bbox_y2: int
     area: float
+    score: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -278,12 +346,25 @@ def _binary_cuda(
     return gpu_binary.download()
 
 
+def _compute_detection_score(area: float, w: float, h: float, min_area: float, max_area: float) -> float:
+    area_mid = (min_area + max_area) / 2.0
+    area_range = max(1.0, (max_area - min_area) / 2.0)
+    area_s = 1.0 - min(1.0, abs(area - area_mid) / area_range)
+
+    ar = max(w, h) / max(1.0, min(w, h))
+    ar_ideal = 2.0
+    ar_s = 1.0 - min(1.0, abs(ar - ar_ideal) / 2.5)
+
+    return round(0.4 * area_s + 0.3 * ar_s + 0.3, 4)
+
+
 def _extract_detections_from_binary(
     binary: np.ndarray,
     frame_proc: np.ndarray,
     bg_proc: np.ndarray,
     ctx: DetectionContext,
     valid_mask: np.ndarray | None,
+    noise_mask: np.ndarray | None = None,
     fg_count: int | None = None,
     perf: PerformanceCollector | None = None,
     frame_idx: int | None = None,
@@ -342,6 +423,15 @@ def _extract_detections_from_binary(
                 or valid_mask[yi, xi] == 0
             ):
                 continue
+        if noise_mask is not None:
+            xi = int(round(cx))
+            yi = int(round(cy))
+            if (
+                0 <= yi < noise_mask.shape[0]
+                and 0 <= xi < noise_mask.shape[1]
+                and noise_mask[yi, xi] > 0
+            ):
+                continue
         if roi_x_min >= 0 and cx < roi_x_min:
             continue
         if roi_x_max >= 0 and cx > roi_x_max:
@@ -359,6 +449,7 @@ def _extract_detections_from_binary(
                 bbox_x2=int(x + w),
                 bbox_y2=int(y + h),
                 area=area,
+                score=_compute_detection_score(area, float(w), float(h), min_area, max_area),
             )
         )
 
@@ -373,6 +464,7 @@ def detect_foreground_blobs(
     background: np.ndarray,
     cfg: dict,
     valid_mask: np.ndarray | None = None,
+    noise_mask: np.ndarray | None = None,
     *,
     compute_device: str = "cpu",
     strict_parity: bool = True,
@@ -459,7 +551,53 @@ def detect_foreground_blobs(
         bg_proc,
         ctx=ctx,
         valid_mask=valid_mask,
+        noise_mask=noise_mask,
         fg_count=fg_count,
         perf=perf,
         frame_idx=frame_idx,
+    )
+
+
+def detect_ffdiff_blobs(
+    frame_gray: np.ndarray,
+    prev_gray: np.ndarray,
+    ctx: DetectionContext,
+    valid_mask: np.ndarray | None = None,
+    noise_mask: np.ndarray | None = None,
+    perf: PerformanceCollector | None = None,
+    frame_idx: int | None = None,
+) -> list[Detection]:
+    blur_kernel = ctx.blur_kernel
+    process_x0 = ctx.process_x0
+    process_x1 = ctx.process_x1
+    process_y0 = ctx.process_y0
+    process_y1 = ctx.process_y1
+
+    frame_view = frame_gray[process_y0:process_y1, process_x0:process_x1]
+    prev_view = prev_gray[process_y0:process_y1, process_x0:process_x1]
+
+    frame_proc = _prepare_frame(frame_view, blur_kernel, blur_kernel_1d=ctx.blur_kernel_1d, perf=perf, frame_idx=frame_idx)
+    prev_proc = _prepare_frame(prev_view, blur_kernel, blur_kernel_1d=ctx.blur_kernel_1d)
+
+    diff = cv2.absdiff(frame_proc, prev_proc)
+    if ctx.threshold_mode == "otsu":
+        otsu_thr, _ = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        thr = max(1, min(255, int(otsu_thr + ctx.otsu_offset)))
+        _, binary = cv2.threshold(diff, thr, 255, cv2.THRESH_BINARY)
+    else:
+        _, binary = cv2.threshold(diff, ctx.diff_threshold, 255, cv2.THRESH_BINARY)
+
+    fg_count = int(cv2.countNonZero(binary))
+    if fg_count == 0:
+        return []
+
+    if ctx.k_open is not None:
+        binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, ctx.k_open)
+    if ctx.k_close is not None:
+        binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, ctx.k_close)
+
+    return _extract_detections_from_binary(
+        binary, frame_proc, prev_proc,
+        ctx=ctx, valid_mask=valid_mask, noise_mask=noise_mask,
+        fg_count=fg_count, perf=perf, frame_idx=frame_idx,
     )

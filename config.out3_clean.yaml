@@ -24,6 +24,9 @@ detection:
   temporal_burst_window_frames: 10
   temporal_burst_trigger_frames: 3
   temporal_burst_cooldown_frames: 24
+  clahe_enabled: false
+  ff_diff_enabled: true
+  dedup_proximity_px: 80.0
 tracking:
   max_distance: 120.0
   max_missed: 12
@@ -41,6 +44,46 @@ tracking:
   merge_overlap_max_mean_distance: 60.0
   merge_overlap_min_direction_cosine: 0.8
   export_track_candidates: true
+  export_tracking_debug: true
+  fast_track_enabled: true
+  fast_track_speed_px_sec: 500
+  fast_track_min_length: 3
+  fast_track_min_duration_sec: 0.08
+  fast_track_min_displacement: 40
+  fast_track_min_path_length: 60
+  fast_track_min_straightness: 0.5
+  fast_track_require_gate_touch: false
+  fast_track_gate_crossing_margin_px: 35
+  adaptive_max_distance_enabled: true
+  adaptive_max_distance_base: 120
+  adaptive_max_distance_speed_gain: 1.25
+  adaptive_max_distance_bbox_gain: 0.35
+  adaptive_max_distance_cap: 220
+  merge_fast_overlap_enabled: true
+  merge_fast_overlap_max_mean_distance: 35
+  merge_fast_overlap_min_common_frames: 2
+  merge_fast_handoff_max_gap_frames: 3
+  merge_fast_handoff_projection_tolerance_px: 45
+  two_stage_association_enabled: true
+  two_stage_association_score_threshold: 0.4
+noise_mask:
+  enabled: true
+  sample_frames: 200
+  noise_std_threshold: 8.0
+  dilate_kernel: 15
+  dilate_iterations: 2
+  blur_kernel: 9
+  save_mask_png: true
+temporal_accumulation:
+  enabled: true
+  window_frames: 5
+  diff_threshold: 12
+  min_area: 20
+  max_area: 50000
+  morph_open: 3
+  morph_close: 5
+  min_trail_aspect: 3.0
+  min_trail_length: 60
 valid_region:
   enabled: true
   method: hybrid_deep_layer_profile
@@ -86,8 +129,41 @@ output:
   track_clips_padding_frames: 5
   trajectory_smoothing_enabled: false
   trajectory_smoothing_window: 5
+fast_events:
+  enabled: true
+  include_rejected_candidates: true
+  include_accepted_tracks: true
+  first_event_id: 10001
+  min_source_track_points: 3
+  min_source_displacement: 35.0
+  min_source_path_length: 60.0
+  min_source_mean_speed: 80.0
+  min_source_straightness: 0.08
+  max_source_duration_sec: 5.0
+  max_group_gap_frames: 45
+  max_group_endpoint_distance: 260.0
+  max_group_overlap_distance: 180.0
+  min_event_points: 4
+  min_event_displacement: 80.0
+  min_event_path_length: 120.0
+  min_event_mean_speed: 120.0
+  order_by_exit_projection: false
+heatmap_events:
+  enabled: true
+  first_event_id: 20001
+  max_events: 0
+  padding_frames: 0
+  threshold: 14
+  blur_kernel: 5
+  percentile: 76.0
+  corridor_width: 180.0
+  bins: 22
+  seed_y_min: -1.0
+  y_max: -1.0
+  min_points: 6
+  min_displacement: 80.0
 flight_trails:
-  enabled: false
+  enabled: true
   video_filename: flight_trails_overlay.mp4
   history_frames: 12
   max_track_gap_frames: 2

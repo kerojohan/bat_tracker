@@ -21,6 +21,8 @@ from .compute import build_execution_plan
 from .config import load_config
 from .detection import build_detection_context
 from .detection import detect_foreground_blobs
+from .detection import detect_ffdiff_blobs
+from .detection import TemporalAccumulator
 from .fast_events import reconstruct_fast_events
 from .fast_events import reconstruct_fast_events_from_candidates
 from .fast_events import render_fast_events_overlay
@@ -33,7 +35,7 @@ from .heatmap_events import write_heatmap_tracks_csv
 from .perf import PerformanceCollector
 from .render import export_tracks_render_json, export_tracks_svg, render_tracks_overlay
 from .track_smoothing import smooth_track_points
-from .tracker import GreedyTracker, TrackPoint
+from .tracker import GreedyTracker, TrackPoint, TrackingDebugRow
 from .trails import export_realtime_trails_video
 from .valid_region import load_image as load_valid_region_image
 from .valid_region import load_mask as load_valid_region_mask
@@ -128,6 +130,7 @@ TRACK_CANDIDATES_CSV_COLUMNS = [
     "accepted",
     "reject_reasons",
     "score",
+    "rescue_mode",
     "frame_start",
     "frame_end",
     "num_detections",
@@ -144,6 +147,27 @@ TRACK_CANDIDATES_CSV_COLUMNS = [
     "start_in_valid_region",
     "end_in_valid_region",
     "direction",
+]
+
+TRACKING_DEBUG_CSV_COLUMNS = [
+    "frame",
+    "track_id",
+    "state",
+    "pred_x",
+    "pred_y",
+    "gate_px",
+    "matched",
+    "det_x",
+    "det_y",
+    "match_dist",
+    "det_score",
+    "bbox_w",
+    "bbox_h",
+    "speed_px_sec",
+    "missed_before",
+    "missed_after",
+    "birth_reason",
+    "kill_reason",
 ]
 
 
@@ -406,6 +430,19 @@ def _path_length(track_points: List[TrackPoint]) -> float:
     return sum(hypot(p1.x - p0.x, p1.y - p0.y) for p0, p1 in zip(track_points[:-1], track_points[1:]))
 
 
+def _deduplicate_detections(detections: list, proximity_px: float = 30.0) -> list:
+    if len(detections) <= 1:
+        return detections
+    prox_sq = proximity_px * proximity_px
+    dets = sorted(detections, key=lambda d: (-d.area, -d.score))
+    kept: list = []
+    for d in dets:
+        if any((d.x - k.x) ** 2 + (d.y - k.y) ** 2 < prox_sq for k in kept):
+            continue
+        kept.append(d)
+    return kept
+
+
 def _point_in_mask(point: TrackPoint, mask: np.ndarray) -> bool:
     xi = int(round(point.x))
     yi = int(round(point.y))
@@ -460,6 +497,25 @@ def _filter_track_points(
     gate_mask = _build_valid_region_gate_mask(valid_mask, tracking_cfg)
     strong_short_score_min = 0.9
 
+    fast_track_enabled = bool(tracking_cfg.get("fast_track_enabled", False))
+    fast_track_speed_px_sec = float(tracking_cfg.get("fast_track_speed_px_sec", 500))
+    fast_track_min_length = int(tracking_cfg.get("fast_track_min_length", 3))
+    fast_track_min_duration_sec = float(tracking_cfg.get("fast_track_min_duration_sec", 0.08))
+    fast_track_min_displacement = float(tracking_cfg.get("fast_track_min_displacement", 40))
+    fast_track_min_path_length = float(tracking_cfg.get("fast_track_min_path_length", 60))
+    fast_track_min_straightness = float(tracking_cfg.get("fast_track_min_straightness", 0.65))
+    fast_track_require_gate_touch = bool(tracking_cfg.get("fast_track_require_gate_touch", True))
+    fast_track_gate_margin = int(tracking_cfg.get("fast_track_gate_crossing_margin_px", 35))
+
+    fast_gate_mask: np.ndarray | None = None
+    if fast_track_enabled and gate_mask is not None and fast_track_gate_margin > 0:
+        k = 2 * fast_track_gate_margin + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        fast_gate_mask = cv2.dilate(gate_mask, kernel, iterations=1)
+
+    def _track_touches_mask(tps: List[TrackPoint], mask: np.ndarray) -> bool:
+        return any(_point_in_mask(tp, mask) for tp in tps)
+
     by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
     for point in points:
         by_track[point.track_id].append(point)
@@ -510,6 +566,7 @@ def _filter_track_points(
             direction = _classify_direction_full(s_in, e_in, track_points, valid_mask, valid_mask.shape[:2])
 
         accepted = not reject_reasons
+        rescue_mode = ""
         if not accepted:
             reasons_set = set(reject_reasons)
             if (
@@ -519,12 +576,45 @@ def _filter_track_points(
             ):
                 accepted = True
                 reject_reasons = []
+                rescue_mode = "strong_short"
+
+        if not accepted and fast_track_enabled:
+            is_fast = mean_speed >= fast_track_speed_px_sec
+            if not is_fast:
+                pass
+            elif not fast_track_require_gate_touch:
+                touches_gate = True
+            elif fast_gate_mask is not None:
+                touches_gate = _track_touches_mask(track_points, fast_gate_mask)
+            else:
+                touches_gate = False
+            if is_fast and touches_gate:
+                fast_ok = True
+                fast_reasons: list[str] = []
+                if len(track_points) < fast_track_min_length and duration < fast_track_min_duration_sec:
+                    fast_ok = False
+                    fast_reasons.append("fast_track_length")
+                if displacement < fast_track_min_displacement:
+                    fast_ok = False
+                    fast_reasons.append("fast_track_displacement")
+                if path_length < fast_track_min_path_length:
+                    fast_ok = False
+                    fast_reasons.append("fast_track_path_length")
+                if straightness < fast_track_min_straightness:
+                    fast_ok = False
+                    fast_reasons.append("fast_track_straightness")
+                if fast_ok:
+                    accepted = True
+                    reject_reasons = []
+                    rescue_mode = "fast_track"
+
         assessments.append({
             "video_id": start.video_id,
             "track_id": start.track_id,
             "accepted": accepted,
             "reject_reasons": ";".join(reject_reasons),
             "score": round(score, 4),
+            "rescue_mode": rescue_mode,
             "frame_start": start.frame,
             "frame_end": end.frame,
             "num_detections": len(track_points),
@@ -821,6 +911,299 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
     return consolidated, merges_applied
 
 
+def _merge_fast_overlap_track_points(
+    points: List[TrackPoint],
+    tracking_cfg: Dict,
+) -> tuple[List[TrackPoint], List[Dict]]:
+    if not bool(tracking_cfg.get("merge_fast_overlap_enabled", False)):
+        return points, []
+
+    max_mean_distance = float(tracking_cfg.get("merge_fast_overlap_max_mean_distance", 35))
+    min_common_frames = int(tracking_cfg.get("merge_fast_overlap_min_common_frames", 2))
+    max_gap_frames = int(tracking_cfg.get("merge_fast_handoff_max_gap_frames", 3))
+    projection_tolerance = float(tracking_cfg.get("merge_fast_handoff_projection_tolerance_px", 45))
+
+    by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
+    for point in points:
+        by_track[point.track_id].append(point)
+    for track_id in by_track:
+        by_track[track_id] = sorted(by_track[track_id], key=lambda p: p.frame)
+
+    if len(by_track) < 2:
+        return points, []
+
+    track_ids = sorted(by_track.keys())
+    parent: Dict[int, int] = {tid: tid for tid in track_ids}
+
+    def find(tid: int) -> int:
+        while parent[tid] != tid:
+            parent[tid] = parent[parent[tid]]
+            tid = parent[tid]
+        return tid
+
+    def union(a: int, b: int) -> None:
+        ra = find(a)
+        rb = find(b)
+        if ra == rb:
+            return
+        if ra < rb:
+            parent[rb] = ra
+        else:
+            parent[ra] = rb
+
+    merges_applied: List[Dict] = []
+
+    track_data: Dict[int, Dict] = {}
+    for tid in track_ids:
+        pts = by_track[tid]
+        track_data[tid] = {
+            "start": pts[0],
+            "end": pts[-1],
+            "frames": {p.frame: p for p in pts},
+        }
+
+    n = len(track_ids)
+    sf_arr = [track_data[tid]["start"].frame for tid in track_ids]
+    ef_arr = [track_data[tid]["end"].frame for tid in track_ids]
+    ex_arr = [track_data[tid]["end"].x for tid in track_ids]
+    ey_arr = [track_data[tid]["end"].y for tid in track_ids]
+    sx_arr = [track_data[tid]["start"].x for tid in track_ids]
+    sy_arr = [track_data[tid]["start"].y for tid in track_ids]
+    max_gap_sq = (max_gap_frames + 1) * (max_gap_frames + 1)
+
+    candidate_pairs: List[Tuple[int, int]] = []
+    sorted_pos = sorted(range(n), key=lambda i: sf_arr[i])
+    heap: List[Tuple[int, int]] = []
+    for b_pos in sorted_pos:
+        b_sf = sf_arr[b_pos]
+        b_id = track_ids[b_pos]
+        while heap and heap[0][0] < b_sf - max_gap_frames:
+            heapq.heappop(heap)
+        for a_ef, a_pos in heap:
+            a_id = track_ids[a_pos]
+            candidate_pairs.append((min(a_id, b_id), max(a_id, b_id)))
+        heapq.heappush(heap, (ef_arr[b_pos], b_pos))
+
+    for track_a_id, track_b_id in candidate_pairs:
+        td_a = track_data[track_a_id]
+        td_b = track_data[track_b_id]
+        a_frames = td_a["frames"]
+        a_end = td_a["end"]
+        a_start = td_a["start"]
+        b_start = td_b["start"]
+        b_end = td_b["end"]
+
+        reason = None
+        reason_data: Dict[str, float | int] = {}
+
+        if a_end.frame < b_start.frame:
+            gap = b_start.frame - a_end.frame
+            if gap <= max_gap_frames:
+                proj_dist = hypot(
+                    (a_end.x + (a_end.x - a_start.x)) - b_start.x,
+                    (a_end.y + (a_end.y - a_start.y)) - b_start.y,
+                )
+                if proj_dist <= projection_tolerance:
+                    reason = "handoff_fast"
+                    reason_data = {"gap_frames": gap, "projection_distance_px": proj_dist}
+        elif b_end.frame < a_start.frame:
+            gap = a_start.frame - b_end.frame
+            if gap <= max_gap_frames:
+                proj_dist = hypot(
+                    (b_end.x + (b_end.x - b_start.x)) - a_start.x,
+                    (b_end.y + (b_end.y - b_start.y)) - a_start.y,
+                )
+                if proj_dist <= projection_tolerance:
+                    reason = "handoff_fast"
+                    reason_data = {"gap_frames": gap, "projection_distance_px": proj_dist}
+        else:
+            b_frames = td_b["frames"]
+            common_frames = sorted(set(a_frames.keys()).intersection(b_frames.keys()))
+            if len(common_frames) >= min_common_frames:
+                distances = []
+                for frame in common_frames:
+                    pa = a_frames[frame]
+                    pb = b_frames[frame]
+                    distances.append(hypot(pa.x - pb.x, pa.y - pb.y))
+                mean_distance = sum(distances) / len(distances)
+                if mean_distance <= max_mean_distance:
+                    reason = "overlap_fast"
+                    reason_data = {
+                        "common_frames": len(common_frames),
+                        "mean_distance": mean_distance,
+                    }
+                elif reason is None:
+                    a_vec = (a_end.x - a_start.x, a_end.y - a_start.y)
+                    b_vec = (b_end.x - b_start.x, b_end.y - b_start.y)
+                    dir_cos = _vector_cosine(a_vec, b_vec)
+                    if dir_cos is not None:
+                        if dir_cos >= 0.98:
+                            mult = 4.0
+                        elif dir_cos >= 0.95:
+                            mult = 2.0
+                        else:
+                            mult = 0.0
+                        if mult > 0.0 and mean_distance <= max_mean_distance * mult:
+                            reason = "overlap_fast_aligned"
+                            reason_data = {
+                                "common_frames": len(common_frames),
+                                "mean_distance": mean_distance,
+                                "direction_cosine": dir_cos,
+                            }
+
+        if reason is None:
+            continue
+
+        ra = find(track_a_id)
+        rb = find(track_b_id)
+        if ra == rb:
+            continue
+        union(track_a_id, track_b_id)
+        merged_to = min(find(track_a_id), find(track_b_id))
+        merges_applied.append({
+            "track_a": track_a_id,
+            "track_b": track_b_id,
+            "merged_to": merged_to,
+            "reason": reason,
+            **reason_data,
+        })
+
+    remap: Dict[int, int] = {tid: find(tid) for tid in track_ids}
+    if all(src == dst for src, dst in remap.items()):
+        return points, []
+
+    merged_points: List[TrackPoint] = []
+    for point in points:
+        new_track_id = remap.get(point.track_id, point.track_id)
+        if new_track_id == point.track_id:
+            merged_points.append(point)
+        else:
+            merged_points.append(
+                TrackPoint(
+                    video_id=point.video_id,
+                    track_id=new_track_id,
+                    frame=point.frame,
+                    time_sec=point.time_sec,
+                    x=point.x,
+                    y=point.y,
+                    vx=point.vx,
+                    vy=point.vy,
+                    bbox_x1=point.bbox_x1,
+                    bbox_y1=point.bbox_y1,
+                    bbox_x2=point.bbox_x2,
+                    bbox_y2=point.bbox_y2,
+                    area=point.area,
+                )
+            )
+
+    merged_points = sorted(merged_points, key=lambda p: (p.track_id, p.frame))
+    by_track_frame: Dict[tuple[int, int], List[TrackPoint]] = defaultdict(list)
+    for point in merged_points:
+        by_track_frame[(point.track_id, point.frame)].append(point)
+
+    consolidated: List[TrackPoint] = []
+    for key in sorted(by_track_frame.keys()):
+        candidates = by_track_frame[key]
+        if len(candidates) == 1:
+            consolidated.append(candidates[0])
+            continue
+        best = max(candidates, key=lambda p: (p.area, -abs(p.vx) - abs(p.vy), -p.x, -p.y))
+        consolidated.append(best)
+
+    return consolidated, merges_applied
+
+
+def _write_tracking_debug_csv(path: Path, debug_rows: list) -> None:
+    if not debug_rows:
+        return
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.DictWriter(handle, fieldnames=TRACKING_DEBUG_CSV_COLUMNS)
+        writer.writeheader()
+        for row in debug_rows:
+            writer.writerow(asdict(row))
+
+
+def compute_noise_mask(
+    video_path: str,
+    background: np.ndarray,
+    cfg: Dict,
+    fps: float,
+    total_frames: int,
+) -> np.ndarray | None:
+    if not bool(cfg.get("enabled", False)):
+        return None
+
+    sample_frames = int(cfg.get("sample_frames", 200))
+    noise_std_threshold = float(cfg.get("noise_std_threshold", 8.0))
+    dilate_kernel_size = int(cfg.get("dilate_kernel", 15))
+    dilate_iterations = int(cfg.get("dilate_iterations", 2))
+    blur_kernel_cfg = int(cfg.get("blur_kernel", 0))
+
+    bg_gray = background
+    if bg_gray.ndim == 3:
+        bg_gray = cv2.cvtColor(bg_gray, cv2.COLOR_BGR2GRAY)
+
+    if blur_kernel_cfg > 1 and blur_kernel_cfg % 2 == 1:
+        bg_proc = cv2.GaussianBlur(bg_gray, (blur_kernel_cfg, blur_kernel_cfg), 0)
+    else:
+        bg_proc = bg_gray
+
+    height, width = bg_proc.shape
+    step = max(1, total_frames // sample_frames)
+    frame_indices = list(range(0, total_frames, step))[:sample_frames]
+
+    sum_arr = np.zeros((height, width), dtype=np.float64)
+    sum_sq_arr = np.zeros((height, width), dtype=np.float64)
+    n = 0
+
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        frame_idx = 0
+        sample_set = set(frame_indices)
+        while cap.isOpened() and n < len(frame_indices):
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if frame_idx not in sample_set:
+                frame_idx += 1
+                continue
+
+            if frame.ndim == 3:
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            else:
+                gray = frame
+
+            if blur_kernel_cfg > 1 and blur_kernel_cfg % 2 == 1:
+                gray_proc = cv2.GaussianBlur(gray, (blur_kernel_cfg, blur_kernel_cfg), 0)
+            else:
+                gray_proc = gray
+
+            diff = cv2.absdiff(gray_proc, bg_proc).astype(np.float64)
+            sum_arr += diff
+            sum_sq_arr += diff * diff
+            n += 1
+            frame_idx += 1
+    finally:
+        cap.release()
+
+    if n == 0:
+        return None
+
+    mean_arr = sum_arr / float(n)
+    temporal_std = np.sqrt(np.maximum(0.0, sum_sq_arr / float(n) - mean_arr * mean_arr))
+
+    noise_mask = (temporal_std > noise_std_threshold).astype(np.uint8) * 255
+
+    if dilate_kernel_size > 0 and dilate_iterations > 0:
+        k = max(3, dilate_kernel_size)
+        if k % 2 == 0:
+            k += 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        noise_mask = cv2.dilate(noise_mask, kernel, iterations=dilate_iterations)
+
+    return noise_mask
+
+
 def _export_track_clips(
     input_video: str,
     output_dir: Path,
@@ -894,6 +1277,7 @@ def _export_track_clips(
 def run_pipeline(input_video: str, output_dir: str, config_path: str | None = None) -> Dict:
     pipeline_started = perf_counter()
     cfg = load_config(config_path)
+    tracking_cfg = cfg["tracking"]
     execution_plan = build_execution_plan(cfg)
     execution_cfg = cfg.get("execution", {})
     strict_parity = bool(execution_cfg.get("strict_parity", True))
@@ -1023,7 +1407,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
                 raise RuntimeError(f"Could not load valid-region mask from: {mask_path}")
         if bool(valid_region_cfg.get("apply_to_detection", True)):
             valid_mask_for_detection = valid_mask
-        valid_gate_mask = _build_valid_region_gate_mask(valid_mask, cfg["tracking"])
+        valid_gate_mask = _build_valid_region_gate_mask(valid_mask, tracking_cfg)
         if valid_gate_mask is not None:
             gate_overlay_path = valid_output_dir / "gate_overlay.png"
             _save_valid_region_gate_overlay(background, valid_gate_mask, gate_overlay_path)
@@ -1036,26 +1420,76 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         progress.complete_stage("valid_region", detail="valid region ready")
 
     tracker = GreedyTracker(
-        max_distance=float(cfg["tracking"]["max_distance"]),
-        max_missed=int(cfg["tracking"]["max_missed"]),
+        max_distance=float(tracking_cfg["max_distance"]),
+        max_missed=int(tracking_cfg["max_missed"]),
         fps=meta.fps,
         video_id=meta.video_id,
+        adaptive_max_distance_enabled=bool(tracking_cfg.get("adaptive_max_distance_enabled", False)),
+        adaptive_max_distance_base=float(tracking_cfg.get("adaptive_max_distance_base", 120.0)),
+        adaptive_max_distance_speed_gain=float(tracking_cfg.get("adaptive_max_distance_speed_gain", 1.25)),
+        adaptive_max_distance_bbox_gain=float(tracking_cfg.get("adaptive_max_distance_bbox_gain", 0.35)),
+        adaptive_max_distance_cap=float(tracking_cfg.get("adaptive_max_distance_cap", 220.0)),
+        two_stage_association_enabled=bool(tracking_cfg.get("two_stage_association_enabled", False)),
+        two_stage_association_score_threshold=float(tracking_cfg.get("two_stage_association_score_threshold", 0.4)),
+        export_debug=bool(tracking_cfg.get("export_tracking_debug", False)),
     )
     burst_gate = TemporalBurstGate.from_detection_cfg(cfg["detection"])
     detection_context = build_detection_context(background, cfg["detection"])
 
+    temporal_cfg = cfg.get("temporal_accumulation", {})
+    temporal_acc = TemporalAccumulator(
+        cfg=temporal_cfg,
+        background=background,
+        blur_kernel=detection_context.blur_kernel,
+        process_roi=(detection_context.process_x0, detection_context.process_y0,
+                      detection_context.process_x1, detection_context.process_y1),
+    )
+
+    noise_mask: np.ndarray | None = None
+    noise_mask_cfg = cfg.get("noise_mask", {})
+    noise_mask_path = str(cfg.get("detection", {}).get("noise_mask_path", "")).strip()
+    if noise_mask_path:
+        noise_mask = cv2.imread(noise_mask_path, cv2.IMREAD_GRAYSCALE)
+        if noise_mask is None:
+            raise RuntimeError(f"Cannot load noise mask from: {noise_mask_path}")
+        if noise_mask.shape != background.shape:
+            noise_mask = cv2.resize(noise_mask, (background.shape[1], background.shape[0]),
+                                     interpolation=cv2.INTER_NEAREST)
+        _, noise_mask = cv2.threshold(noise_mask, 127, 255, cv2.THRESH_BINARY)
+    elif bool(noise_mask_cfg.get("enabled", False)):
+        noise_mask = compute_noise_mask(
+            video_path=input_video,
+            background=background,
+            cfg=noise_mask_cfg,
+            fps=meta.fps,
+            total_frames=meta.frame_count,
+        )
+        if noise_mask is not None and bool(noise_mask_cfg.get("save_mask_png", True)):
+            noise_mask_path_out = out_dir / "noise_mask.png"
+            cv2.imwrite(str(noise_mask_path_out), noise_mask)
+
     all_points: List[TrackPoint] = []
     frame_processed = 0
     suppressed_burst_frames = 0
+    detection_cfg = cfg["detection"]
+    clahe_enabled = bool(detection_cfg.get("clahe_enabled", False))
+    ff_diff_enabled = bool(detection_cfg.get("ff_diff_enabled", False))
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) if clahe_enabled else None
+    prev_gray: np.ndarray | None = None
     progress.start_stage("frame_processing")
 
     for frame_idx, gray in iter_gray_frames(input_video, perf=perf):
         frame_started = perf_counter()
+
+        if clahe is not None:
+            gray = clahe.apply(gray)
+
         dets = detect_foreground_blobs(
             gray,
             background,
-            cfg["detection"],
+            detection_cfg,
             valid_mask=valid_mask_for_detection,
+            noise_mask=noise_mask,
             compute_device=execution_plan.selected_device,
             strict_parity=strict_parity,
             runtime_stats=detection_runtime_stats,
@@ -1063,9 +1497,32 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             frame_idx=frame_idx,
             perf=perf,
         )
+
+        if ff_diff_enabled and prev_gray is not None:
+            ff_dets = detect_ffdiff_blobs(
+                gray, prev_gray, detection_context,
+                valid_mask=valid_mask_for_detection,
+                noise_mask=noise_mask,
+                perf=perf, frame_idx=frame_idx,
+            )
+            for fd in ff_dets:
+                dets.append(fd)
+
+        if ff_diff_enabled:
+            prev_gray = gray.copy()
         if burst_gate is not None and not burst_gate.should_keep(frame_idx, len(dets)):
             dets = []
             suppressed_burst_frames += 1
+
+        if temporal_acc.enabled:
+            extra_dets = temporal_acc.feed(gray)
+            if extra_dets:
+                dets.extend(extra_dets)
+
+        if len(dets) > 1:
+            dedup_px = float(detection_cfg.get("dedup_proximity_px", 80.0))
+            dets = _deduplicate_detections(dets, proximity_px=dedup_px)
+
         tracker_started = perf_counter()
         frame_points = tracker.step(frame_idx, dets)
         perf.record("tracker", perf_counter() - tracker_started, frame_idx=frame_idx)
@@ -1085,10 +1542,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
 
     progress.start_stage("postprocess")
     postprocess_started = perf_counter()
-    merged_points, merges_applied = _auto_merge_track_points(all_points, cfg["tracking"])
+    merged_points, merges_applied = _auto_merge_track_points(all_points, tracking_cfg)
+    fast_merged_points, fast_merges_applied = _merge_fast_overlap_track_points(merged_points, tracking_cfg)
     filtered_points, track_assessments = _filter_track_points(
-        merged_points,
-        cfg["tracking"],
+        fast_merged_points,
+        tracking_cfg,
         meta.fps,
         valid_mask=valid_mask,
     )
@@ -1105,7 +1563,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         progress.start_stage("fast_events")
         fast_started = perf_counter()
         fast_events = reconstruct_fast_events(
-            merged_points,
+            fast_merged_points,
             track_assessments,
             cfg.get("fast_events", {}),
             frame_shape=(meta.height, meta.width),
@@ -1187,8 +1645,12 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     tracks_csv_path = out_dir / "tracks.csv"
     _write_tracks_csv(tracks_csv_path, filtered_points)
     track_candidates_csv_path = out_dir / "track_candidates.csv"
-    if bool(cfg["tracking"].get("export_track_candidates", False)):
+    if bool(tracking_cfg.get("export_track_candidates", False)):
         _write_track_candidates_csv(track_candidates_csv_path, track_assessments)
+
+    tracking_debug_csv_path = out_dir / "tracking_debug.csv"
+    if bool(tracking_cfg.get("export_tracking_debug", False)):
+        _write_tracking_debug_csv(tracking_debug_csv_path, tracker.debug_rows)
 
     out_cfg_export = cfg.get("output", {})
     smoothing_on = bool(out_cfg_export.get("trajectory_smoothing_enabled", False))
@@ -1274,6 +1736,20 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         )
     overlay_path = out_dir / "tracks_overlay.png"
     cv2.imwrite(str(overlay_path), overlay)
+
+    all_tracks_overlay = render_tracks_overlay(
+        background_gray=background,
+        points=fast_merged_points,
+        line_thickness=overlay_line_t,
+        start_radius=overlay_start_r,
+        alpha=overlay_alpha_v,
+        draw_track_labels=overlay_lbl,
+        draw_track_labels_at_end=overlay_lbl_end,
+        label_font_scale=overlay_lbl_scale,
+        label_thickness=overlay_lbl_th,
+    )
+    all_tracks_overlay_path = out_dir / "tracks_all_overlay.png"
+    cv2.imwrite(str(all_tracks_overlay_path), all_tracks_overlay)
     progress.complete_stage("exports_core", detail="csv and overlay exported")
 
     flight_trails_output = ""
@@ -1343,6 +1819,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             **_build_metrics(filtered_points, frame_processed),
             "frames_suppressed_temporal_burst": suppressed_burst_frames,
             "tracks_merged_auto": len(merges_applied),
+            "tracks_merged_fast_overlap": len(fast_merges_applied),
             **background_runtime_stats,
             **detection_runtime_stats,
         },
@@ -1364,7 +1841,12 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "flight_trails_overlay_video": flight_trails_output,
             "track_candidates_csv": (
                 str(track_candidates_csv_path.resolve())
-                if bool(cfg["tracking"].get("export_track_candidates", False))
+                if bool(tracking_cfg.get("export_track_candidates", False))
+                else ""
+            ),
+            "tracking_debug_csv": (
+                str(tracking_debug_csv_path.resolve())
+                if bool(tracking_cfg.get("export_tracking_debug", False))
                 else ""
             ),
             **overlay_smoothing_paths,
@@ -1374,8 +1856,10 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             **valid_region_outputs,
         },
         "postprocess": {
-            "auto_merge_enabled": bool(cfg["tracking"].get("auto_merge_suggested", False)),
+            "auto_merge_enabled": bool(tracking_cfg.get("auto_merge_suggested", False)),
+            "fast_merge_overlap_enabled": bool(tracking_cfg.get("merge_fast_overlap_enabled", False)),
             "auto_merges_applied": merges_applied,
+            "fast_merges_applied": fast_merges_applied,
             "track_candidates_total": len(track_assessments),
             "track_candidates_kept": sum(1 for row in track_assessments if row["accepted"]),
             "track_candidates_rejected": sum(1 for row in track_assessments if not row["accepted"]),
