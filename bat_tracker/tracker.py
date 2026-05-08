@@ -199,6 +199,8 @@ class GreedyTracker:
         for i, track_id in enumerate(track_ids):
             track = self._active[track_id]
             gate = gate_map.get(track_id, self.max_distance)
+            if track.missed > self.max_missed // 2:
+                gate = min(gate, self.max_distance * 0.3)
             if self.kalman_enabled and track.kalman is not None and track.kalman.initialized:
                 px, py, _, _ = track.kalman.state()
             else:
