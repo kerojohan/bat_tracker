@@ -48,8 +48,8 @@ tracking:
   export_tracking_debug: true
   fast_track_enabled: true
   fast_track_speed_px_sec: 500
-  fast_track_min_length: 3
-  fast_track_min_duration_sec: 0.08
+  fast_track_min_length: 2
+  fast_track_min_duration_sec: 0.04
   fast_track_min_displacement: 40
   fast_track_min_path_length: 60
   fast_track_min_straightness: 0.35
@@ -133,10 +133,10 @@ output:
   trajectory_smoothing_window: 5
 fast_events:
   enabled: true
-  include_rejected_candidates: false
+  include_rejected_candidates: true
   include_accepted_tracks: true
   first_event_id: 10001
-  min_source_track_points: 3
+  min_source_track_points: 2
   min_source_displacement: 35.0
   min_source_path_length: 60.0
   min_source_mean_speed: 80.0
@@ -144,7 +144,7 @@ fast_events:
   max_source_duration_sec: 5.0
   max_group_gap_frames: 5
   max_group_endpoint_distance: 100.0
-  max_group_overlap_distance: 100.0
+  max_group_overlap_distance: 120.0
   min_event_points: 2
   min_event_displacement: 80.0
   min_event_path_length: 120.0
