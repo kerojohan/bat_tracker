@@ -1434,6 +1434,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         two_stage_association_score_threshold=float(tracking_cfg.get("two_stage_association_score_threshold", 0.4)),
         export_debug=bool(tracking_cfg.get("export_tracking_debug", False)),
         kalman_enabled=bool(tracking_cfg.get("kalman_enabled", False)),
+        kalman_gate=float(tracking_cfg.get("kalman_gate", 3.0)),
     )
     burst_gate = TemporalBurstGate.from_detection_cfg(cfg["detection"])
     detection_context = build_detection_context(background, cfg["detection"])

@@ -84,6 +84,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "two_stage_association_enabled": False,
         "two_stage_association_score_threshold": 0.4,
         "kalman_enabled": False,
+        "kalman_gate": 3.0,
     },
     "fast_events": {
         "enabled": False,

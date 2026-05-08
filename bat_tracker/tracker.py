@@ -149,6 +149,7 @@ class GreedyTracker:
         two_stage_association_score_threshold: float = 0.4,
         export_debug: bool = False,
         kalman_enabled: bool = False,
+        kalman_gate: float = 3.0,
     ):
         self.max_distance = float(max_distance)
         self.max_distance_sq = self.max_distance * self.max_distance
@@ -167,6 +168,7 @@ class GreedyTracker:
         self.export_debug = bool(export_debug)
         self.debug_rows: List[TrackingDebugRow] = []
         self.kalman_enabled = bool(kalman_enabled)
+        self.kalman_gate = float(kalman_gate)
         self._dt = 1.0 / max(1e-6, self.fps)
 
     def _adaptive_gate(self, track: ActiveTrack) -> float:
@@ -208,11 +210,13 @@ class GreedyTracker:
                 if self.kalman_enabled and track.kalman is not None and track.kalman.initialized:
                     d2 = track.kalman.mahalanobis_distance_sq(det.x, det.y)
                     d = d2 ** 0.5
+                    effective_gate = self.kalman_gate
                 else:
                     dx = px - det.x
                     dy = py - det.y
                     d = (dx * dx + dy * dy) ** 0.5
-                if d <= gate:
+                    effective_gate = gate
+                if d <= effective_gate:
                     cost[i, j_local] = d
 
         row_ind, col_ind = linear_sum_assignment(cost)
