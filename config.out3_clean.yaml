@@ -25,7 +25,7 @@ detection:
   temporal_burst_trigger_frames: 3
   temporal_burst_cooldown_frames: 24
   clahe_enabled: false
-  ff_diff_enabled: false
+  ff_diff_enabled: true
   opticalflow_enabled: false
   dedup_proximity_px: 80.0
 tracking:
