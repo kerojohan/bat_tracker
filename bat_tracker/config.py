@@ -41,6 +41,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "noise_mask_path": "",
         "clahe_enabled": False,
         "ff_diff_enabled": False,
+        "opticalflow_enabled": False,
         "dedup_proximity_px": 30.0,
     },
     "tracking": {

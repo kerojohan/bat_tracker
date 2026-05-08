@@ -601,3 +601,69 @@ def detect_ffdiff_blobs(
         ctx=ctx, valid_mask=valid_mask, noise_mask=noise_mask,
         fg_count=fg_count, perf=perf, frame_idx=frame_idx,
     )
+
+
+def detect_opticalflow_blobs(
+    frame_gray: np.ndarray,
+    prev_gray: np.ndarray,
+    ctx: DetectionContext,
+    valid_mask: np.ndarray | None = None,
+    noise_mask: np.ndarray | None = None,
+    perf: PerformanceCollector | None = None,
+    frame_idx: int | None = None,
+) -> list[Detection]:
+    process_x0 = ctx.process_x0
+    process_x1 = ctx.process_x1
+    process_y0 = ctx.process_y0
+    process_y1 = ctx.process_y1
+
+    frame_view = frame_gray[process_y0:process_y1, process_x0:process_x1]
+    prev_view = prev_gray[process_y0:process_y1, process_x0:process_x1]
+
+    flow = cv2.calcOpticalFlowFarneback(
+        prev_view, frame_view, None,
+        pyr_scale=0.5, levels=3, winsize=15,
+        iterations=3, poly_n=5, poly_sigma=1.2, flags=0,
+    )
+    mag, ang = cv2.cartToPolar(flow[..., 0], flow[..., 1])
+    mag_thresh = 2.0
+    _, motion_mask = cv2.threshold(mag, mag_thresh, 255, cv2.THRESH_BINARY)
+    motion_mask = motion_mask.astype(np.uint8)
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+    motion_mask = cv2.morphologyEx(motion_mask, cv2.MORPH_CLOSE, kernel)
+    motion_mask = cv2.morphologyEx(motion_mask, cv2.MORPH_OPEN, kernel)
+
+    contours, _ = cv2.findContours(motion_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    detections: list[Detection] = []
+    min_area = ctx.min_area
+    max_area = ctx.max_area
+
+    for cnt in contours:
+        area = float(cv2.contourArea(cnt))
+        if area < min_area or area > max_area:
+            continue
+        x, y, w, h = cv2.boundingRect(cnt)
+        M = cv2.moments(cnt)
+        if M["m00"] <= 0:
+            continue
+        cx = float(M["m10"] / M["m00"]) + process_x0
+        cy = float(M["m01"] / M["m00"]) + process_y0
+        if valid_mask is not None:
+            xi = int(round(cx))
+            yi = int(round(cy))
+            if yi < 0 or yi >= valid_mask.shape[0] or xi < 0 or xi >= valid_mask.shape[1] or valid_mask[yi, xi] == 0:
+                continue
+        if noise_mask is not None:
+            xi = int(round(cx))
+            yi = int(round(cy))
+            if 0 <= yi < noise_mask.shape[0] and 0 <= xi < noise_mask.shape[1] and noise_mask[yi, xi] > 0:
+                continue
+        detections.append(Detection(
+            x=cx, y=cy,
+            bbox_x1=int(x + process_x0), bbox_y1=int(y + process_y0),
+            bbox_x2=int(x + w + process_x0), bbox_y2=int(y + h + process_y0),
+            area=area,
+            score=0.35,
+        ))
+    return detections

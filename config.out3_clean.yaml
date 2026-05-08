@@ -26,6 +26,7 @@ detection:
   temporal_burst_cooldown_frames: 24
   clahe_enabled: false
   ff_diff_enabled: true
+  opticalflow_enabled: false
   dedup_proximity_px: 80.0
 tracking:
   max_distance: 120.0

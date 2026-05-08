@@ -22,6 +22,7 @@ from .config import load_config
 from .detection import build_detection_context
 from .detection import detect_foreground_blobs
 from .detection import detect_ffdiff_blobs
+from .detection import detect_opticalflow_blobs
 from .detection import TemporalAccumulator
 from .fast_events import reconstruct_fast_events
 from .fast_events import reconstruct_fast_events_from_candidates
@@ -1474,6 +1475,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     detection_cfg = cfg["detection"]
     clahe_enabled = bool(detection_cfg.get("clahe_enabled", False))
     ff_diff_enabled = bool(detection_cfg.get("ff_diff_enabled", False))
+    of_enabled = bool(detection_cfg.get("opticalflow_enabled", False))
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) if clahe_enabled else None
     prev_gray: np.ndarray | None = None
     progress.start_stage("frame_processing")
@@ -1508,7 +1510,17 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             for fd in ff_dets:
                 dets.append(fd)
 
-        if ff_diff_enabled:
+        if of_enabled and prev_gray is not None:
+            of_dets = detect_opticalflow_blobs(
+                gray, prev_gray, detection_context,
+                valid_mask=valid_mask_for_detection,
+                noise_mask=noise_mask,
+                perf=perf, frame_idx=frame_idx,
+            )
+            for od in of_dets:
+                dets.append(od)
+
+        if ff_diff_enabled or of_enabled:
             prev_gray = gray.copy()
         if burst_gate is not None and not burst_gate.should_keep(frame_idx, len(dets)):
             dets = []
