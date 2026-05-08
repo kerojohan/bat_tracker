@@ -1478,6 +1478,9 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     clahe_enabled = bool(detection_cfg.get("clahe_enabled", False))
     ff_diff_enabled = bool(detection_cfg.get("ff_diff_enabled", False))
     of_enabled = bool(detection_cfg.get("opticalflow_enabled", False))
+    highpass_enabled = bool(detection_cfg.get("highpass_enabled", False))
+    highpass_kernel = int(detection_cfg.get("highpass_kernel", 15))
+    highpass_strength = float(detection_cfg.get("highpass_strength", 1.5))
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)) if clahe_enabled else None
     prev_gray: np.ndarray | None = None
     progress.start_stage("frame_processing")
@@ -1487,6 +1490,10 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
 
         if clahe is not None:
             gray = clahe.apply(gray)
+
+        if highpass_enabled:
+            blurred = cv2.GaussianBlur(gray, (highpass_kernel, highpass_kernel), 0)
+            gray = cv2.addWeighted(gray, highpass_strength, blurred, 1.0 - highpass_strength, 0)
 
         dets = detect_foreground_blobs(
             gray,

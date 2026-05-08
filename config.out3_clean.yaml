@@ -5,7 +5,7 @@ background:
   context_start_sec: 0.0
   context_duration_sec: -1.0
 detection:
-  blur_kernel: 9
+  blur_kernel: 5
   threshold_mode: fixed
   diff_threshold: 15
   otsu_offset: 0
@@ -74,7 +74,7 @@ noise_mask:
   noise_std_threshold: 8.0
   dilate_kernel: 15
   dilate_iterations: 2
-  blur_kernel: 9
+  blur_kernel: 5
   save_mask_png: true
 temporal_accumulation:
   enabled: true

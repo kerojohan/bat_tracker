@@ -42,6 +42,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "clahe_enabled": False,
         "ff_diff_enabled": False,
         "opticalflow_enabled": False,
+        "highpass_enabled": False,
+        "highpass_kernel": 15,
+        "highpass_strength": 1.5,
         "dedup_proximity_px": 30.0,
     },
     "tracking": {
