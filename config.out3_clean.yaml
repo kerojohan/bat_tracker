@@ -53,7 +53,7 @@ tracking:
   fast_track_min_displacement: 40
   fast_track_min_path_length: 60
   fast_track_min_straightness: 0.35
-  fast_track_require_gate_touch: false
+  fast_track_require_gate_touch: true
   fast_track_gate_crossing_margin_px: 35
   adaptive_max_distance_enabled: true
   adaptive_max_distance_base: 120
@@ -166,7 +166,7 @@ heatmap_events:
   min_points: 4
   min_displacement: 40.0
 flight_trails:
-  enabled: true
+  enabled: false
   video_filename: flight_trails_overlay.mp4
   history_frames: 12
   max_track_gap_frames: 2
