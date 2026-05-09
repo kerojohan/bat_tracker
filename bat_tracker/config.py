@@ -110,6 +110,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "min_event_path_length": 120.0,
         "min_event_mean_speed": 120.0,
         "order_by_exit_projection": False,
+        "require_gate_touch": False,
         "overlay_line_thickness": 3,
         "overlay_start_radius": 6,
         "overlay_alpha": 1.0,

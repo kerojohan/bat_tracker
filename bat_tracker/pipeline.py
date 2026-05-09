@@ -1601,6 +1601,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             cfg.get("fast_events", {}),
             frame_shape=(meta.height, meta.width),
         )
+        if valid_gate_mask is not None and bool(cfg.get("fast_events", {}).get("require_gate_touch", False)):
+            fast_events = [
+                e for e in fast_events
+                if any(_point_in_mask(p, valid_gate_mask) for p in e.points)
+            ]
         used_fast_source_ids = {
             track_id
             for event in fast_events

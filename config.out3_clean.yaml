@@ -150,6 +150,7 @@ fast_events:
   min_event_path_length: 120.0
   min_event_mean_speed: 120.0
   order_by_exit_projection: false
+  require_gate_touch: true
 heatmap_events:
   enabled: true
   first_event_id: 20001
