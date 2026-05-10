@@ -1060,6 +1060,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
                 diff_threshold=int(motion_enhance_cfg.get("diff_threshold", 25)),
                 morph_open=int(motion_enhance_cfg.get("morph_open", 3)),
                 morph_close=int(motion_enhance_cfg.get("morph_close", 5)),
+                merge_distance=int(motion_enhance_cfg.get("merge_distance", 0)),
             )
         dets = detect_foreground_blobs(
             gray,

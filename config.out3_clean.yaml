@@ -125,3 +125,4 @@ motion_enhance:
   diff_threshold: 25
   morph_open: 3
   morph_close: 5
+  merge_distance: 0
