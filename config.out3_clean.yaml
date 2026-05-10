@@ -47,7 +47,7 @@ valid_region:
   apply_to_detection: false
   hybrid_combine_mode: and
   input_image: ''
-  input_mask: ''
+  input_mask: /home/johan/Projectes/RATPENATS/tracker2/outputs_dscf_native/valid_region/mask.png
   context_start_sec: 0.0
   context_duration_sec: 75.0
   blur_kernel_size: 151
