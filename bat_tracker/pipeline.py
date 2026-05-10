@@ -35,6 +35,8 @@ from .render import export_tracks_render_json, export_tracks_svg, render_tracks_
 from .track_smoothing import smooth_track_points
 from .tracker import GreedyTracker, TrackPoint
 from .trails import export_realtime_trails_video
+from .fast_overlay import export_fast_track_overlay
+from .motion_enhance import enhance_motion
 from .valid_region import load_image as load_valid_region_image
 from .valid_region import load_mask as load_valid_region_mask
 from .valid_region import run_valid_region
@@ -1043,7 +1045,8 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     )
     burst_gate = TemporalBurstGate.from_detection_cfg(cfg["detection"])
     detection_context = build_detection_context(background, cfg["detection"])
-
+    motion_enhance_cfg = cfg.get("motion_enhance", {})
+    motion_enhance_enabled = motion_enhance_cfg.get("enabled", False)
     all_points: List[TrackPoint] = []
     frame_processed = 0
     suppressed_burst_frames = 0
@@ -1051,6 +1054,13 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
 
     for frame_idx, gray in iter_gray_frames(input_video, perf=perf):
         frame_started = perf_counter()
+        if motion_enhance_enabled:
+            gray = enhance_motion(
+                gray, background,
+                diff_threshold=int(motion_enhance_cfg.get("diff_threshold", 25)),
+                morph_open=int(motion_enhance_cfg.get("morph_open", 3)),
+                morph_close=int(motion_enhance_cfg.get("morph_close", 5)),
+            )
         dets = detect_foreground_blobs(
             gray,
             background,
@@ -1292,6 +1302,21 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         )
         progress.complete_stage("flight_trails", detail="trail video exported")
 
+    fast_overlay_output = ""
+    fast_overlay_cfg = cfg.get("fast_track_overlay", {})
+    if fast_overlay_cfg.get("enabled", False):
+        progress.start_stage("fast_overlay")
+        fast_overlay_output = export_fast_track_overlay(
+            input_video=input_video,
+            tracks_csv=tracks_csv_path,
+            events_csv=events_csv_path,
+            output_path=out_dir / fast_overlay_cfg.get("video_filename", "fast_tracks_overlay.mp4"),
+            source_video=fast_overlay_cfg.get("source_video") or None,
+            min_speed=float(fast_overlay_cfg.get("min_speed_px_sec", 1000.0)),
+            dot_radius=int(fast_overlay_cfg.get("dot_radius", 8)),
+        )
+        progress.complete_stage("fast_overlay", detail="fast-track overlay exported")
+
     track_clip_outputs: Dict[str, str] = {}
     if export_track_clips_enabled:
         progress.start_stage("track_clips")
@@ -1362,6 +1387,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "tracks_render_json": str(tracks_render_json_path.resolve()),
             "tracks_overlay_png": str(overlay_path.resolve()),
             "flight_trails_overlay_video": flight_trails_output,
+            "fast_tracks_overlay_video": fast_overlay_output,
             "track_candidates_csv": (
                 str(track_candidates_csv_path.resolve())
                 if bool(cfg["tracking"].get("export_track_candidates", False))
@@ -1402,6 +1428,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "enabled": flight_trails_enabled,
             "source_track_points": len(smoothed_points) if smoothed_points is not None else len(filtered_points),
             "output_video": flight_trails_output,
+        },
+        "fast_track_overlay": {
+            "enabled": bool(fast_overlay_cfg.get("enabled", False)),
+            "min_speed_px_sec": float(fast_overlay_cfg.get("min_speed_px_sec", 1000.0)),
+            "output_video": fast_overlay_output,
         },
     }
 
