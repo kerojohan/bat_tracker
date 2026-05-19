@@ -9,6 +9,7 @@ from xml.etree import ElementTree as ET
 import cv2
 import numpy as np
 
+from .detection import Detection
 from .tracker import TrackPoint
 
 
@@ -16,6 +17,37 @@ def track_color(track_id: int) -> Tuple[int, int, int]:
     seed = np.random.default_rng(track_id)
     bgr = seed.integers(32, 256, size=3, dtype=np.uint8)
     return int(bgr[0]), int(bgr[1]), int(bgr[2])
+
+
+def render_detections_overlay(
+    background_gray: np.ndarray,
+    detections: Sequence[Detection],
+    *,
+    color: tuple[int, int, int],
+    alpha: float = 0.85,
+    line_thickness: int = 1,
+    point_radius: int = 2,
+) -> np.ndarray:
+    base = cv2.cvtColor(background_gray, cv2.COLOR_GRAY2BGR)
+    marks = np.zeros_like(base)
+    for det in detections:
+        cv2.rectangle(
+            marks,
+            (int(det.bbox_x1), int(det.bbox_y1)),
+            (int(det.bbox_x2), int(det.bbox_y2)),
+            color,
+            max(1, int(line_thickness)),
+            lineType=cv2.LINE_AA,
+        )
+        cv2.circle(
+            marks,
+            (int(round(det.x)), int(round(det.y))),
+            max(1, int(point_radius)),
+            color,
+            -1,
+            lineType=cv2.LINE_AA,
+        )
+    return cv2.addWeighted(base, 1.0, marks, max(0.0, min(1.0, float(alpha))), 0)
 
 
 def _track_color_hex(track_id: int) -> str:

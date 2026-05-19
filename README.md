@@ -135,12 +135,13 @@ Columnas exactas:
 3. Deteccion de foreground por diferencia absoluta con el fondo.
 4. Umbral binario (fijo u Otsu) + morfologia (open/close) + contornos.
 5. Filtrado de blobs por area minima/maxima.
-6. Tracking 2D frame a frame con asignacion greedy por distancia maxima y prediccion por velocidad para reducir cortes.
-7. Merge automatico opcional de tracks fragmentados antes del filtrado final.
-8. Evaluacion centralizada de tracks candidatos (score + motivos de rechazo) y export de `tracks.csv`, `events.csv`, `tracks.svg`, `tracks_render.json` y render final `tracks_overlay.png`.
-9. Export opcional de `flight_trails_overlay.mp4` con estelas temporales acumuladas sobre el video original si `flight_trails.enabled`.
-10. Si `valid_region.enabled`, calculo de banda vertical valida desde iluminacion horizontal y guardado en `valid_region/*`.
-11. Export de `meta.json` con parametros, metadatos y metricas.
+6. Fusion opcional de un segundo detector (`secondary_detection`) antes del tracker: conserva las detecciones primarias y anade solo las secundarias que no coinciden por distancia/IoU.
+7. Tracking 2D frame a frame con asignacion greedy por distancia maxima y prediccion por velocidad para reducir cortes.
+8. Merge automatico opcional de tracks fragmentados antes del filtrado final.
+9. Evaluacion centralizada de tracks candidatos (score + motivos de rechazo) y export de `tracks.csv`, `events.csv`, `tracks.svg`, `tracks_render.json` y render final `tracks_overlay.png`.
+10. Export opcional de `flight_trails_overlay.mp4` con estelas temporales acumuladas sobre el video original si `flight_trails.enabled`.
+11. Si `valid_region.enabled`, calculo de banda vertical valida desde iluminacion horizontal y guardado en `valid_region/*`.
+12. Export de `meta.json` con parametros, metadatos y metricas.
    - incluye `postprocess.auto_merges_applied` cuando `tracking.auto_merge_suggested` esta activo.
    - incluye `trajectory_smoothing.enabled/window` y rutas extra de overlay cuando el suavizado esta activado.
 
@@ -165,6 +166,14 @@ Usa `config.yaml.example` como base.
     - `temporal_burst_window_frames`: tamano de ventana temporal
     - `temporal_burst_trigger_frames`: frames altos dentro de ventana para activar suppression
     - `temporal_burst_cooldown_frames`: frames suprimidos tras activacion
+- `secondary_detection.*`: segunda pasada opcional antes del tracking para recuperar detecciones que el detector principal no ve
+  - `secondary_detection.enabled`: activa la segunda pasada.
+  - `secondary_detection.algorithm`: `foreground` reutiliza el detector interno con otros parametros; `kinetic` ejecuta `bat_tracking2_long_kinetic.py` como segundo tracker independiente.
+  - `secondary_detection.inherit_primary`: empieza desde `detection.*` y aplica solo los overrides definidos en este bloque.
+  - `secondary_detection.dedupe_max_distance_px`: si una deteccion secundaria cae a esta distancia o menos de una ya aceptada, se considera duplicada.
+  - `secondary_detection.dedupe_min_iou`: si las cajas se solapan con este IoU o mas, se considera duplicada.
+  - cualquier otro campo del bloque sobrescribe el parametro equivalente de `detection.*` solo para la segunda pasada.
+  - en modo `kinetic`, se usa la implementacion incorporada en `bat_tracker/vendor/fast_tracker`; `secondary_detection.script_path` queda como override opcional para pruebas externas. Los parametros `auto_calibrate`, `temporal_smooth`, `morph_close_iters`, etc. se pasan a ese algoritmo; los tracks resultantes se exportan en `secondary_kinetic_tracks.csv` y los faltantes no duplicados en `secondary_kinetic_added_tracks.csv`.
 - `tracking.*`: distancia maxima de asociacion, tolerancia a frames perdidos y filtros minimos por trayectoria
   - `tracking.min_track_length`: minimo de puntos por trayectoria
   - `tracking.min_track_duration_sec`: duracion minima en segundos (si se define, se combina con `min_track_length`)

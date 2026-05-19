@@ -27,6 +27,24 @@ detection:
   temporal_burst_trigger_frames: 0
   temporal_burst_cooldown_frames: 0
 
+secondary_detection:
+  enabled: false
+  algorithm: foreground
+  inherit_primary: true
+  dedupe_max_distance_px: 8.0
+  dedupe_min_iou: 0.10
+  kinetic_dedupe_max_overlap_distance_px: 45.0
+  kinetic_dedupe_min_overlap_frames: 4
+  kinetic_dedupe_min_overlap_ratio: 0.6
+  # In kinetic mode the bundled bat_tracker/vendor/fast_tracker implementation is used by default.
+  # script_path: ""  # optional override for testing an external kinetic script
+  # Override only the parameters that should differ from detection.*.
+  # Example for a more sensitive second pass:
+  # threshold_mode: fixed
+  # diff_threshold: 10
+  # morph_close: 1
+  # min_area: 4
+
 tracking:
   max_distance: 60.0
   max_missed: 12

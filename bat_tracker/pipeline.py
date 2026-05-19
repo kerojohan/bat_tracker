@@ -21,6 +21,8 @@ from .compute import build_execution_plan
 from .config import load_config
 from .detection import build_detection_context
 from .detection import detect_foreground_blobs
+from .detection_fusion import build_secondary_detection_config
+from .detection_fusion import fuse_detections
 from .fast_events import reconstruct_fast_events
 from .fast_events import reconstruct_fast_events_from_candidates
 from .fast_events import render_fast_events_overlay
@@ -30,8 +32,10 @@ from .heatmap_events import reconstruct_heatmap_events
 from .heatmap_events import render_heatmap_events_overlay
 from .heatmap_events import write_heatmap_events_csv
 from .heatmap_events import write_heatmap_tracks_csv
+from .kinetic_secondary import dedupe_secondary_track_points
+from .kinetic_secondary import run_kinetic_secondary_tracks
 from .perf import PerformanceCollector
-from .render import export_tracks_render_json, export_tracks_svg, render_tracks_overlay
+from .render import export_tracks_render_json, export_tracks_svg, render_detections_overlay, render_tracks_overlay
 from .track_smoothing import smooth_track_points
 from .tracker import GreedyTracker, TrackPoint
 from .trails import export_realtime_trails_video
@@ -422,6 +426,41 @@ def _build_valid_region_gate_mask(valid_mask: np.ndarray | None, tracking_cfg: D
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
         gate_mask = cv2.dilate(gate_mask, kernel, iterations=1)
     return gate_mask
+
+
+def _filter_points_start_or_end_in_mask(
+    points: List[TrackPoint],
+    mask: np.ndarray | None,
+) -> tuple[List[TrackPoint], dict]:
+    if mask is None:
+        return points, {
+            "mask_filter_enabled": False,
+            "tracks_before_mask_filter": len({point.track_id for point in points}),
+            "tracks_after_mask_filter": len({point.track_id for point in points}),
+            "tracks_rejected_by_mask_filter": 0,
+        }
+
+    by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
+    for point in points:
+        by_track[point.track_id].append(point)
+
+    kept: List[TrackPoint] = []
+    rejected = 0
+    for track_points in by_track.values():
+        track_points = sorted(track_points, key=lambda point: point.frame)
+        if not track_points:
+            continue
+        if _point_in_mask(track_points[0], mask) or _point_in_mask(track_points[-1], mask):
+            kept.extend(track_points)
+        else:
+            rejected += 1
+
+    return kept, {
+        "mask_filter_enabled": True,
+        "tracks_before_mask_filter": len(by_track),
+        "tracks_after_mask_filter": len({point.track_id for point in kept}),
+        "tracks_rejected_by_mask_filter": rejected,
+    }
 
 
 def _save_valid_region_gate_overlay(
@@ -918,6 +957,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     perf = PerformanceCollector(meta.frame_count)
     valid_region_cfg = cfg.get("valid_region", {})
     valid_region_enabled = bool(valid_region_cfg.get("enabled", False))
+    secondary_detection_cfg = cfg.get("secondary_detection", {})
+    secondary_detection_enabled = bool(secondary_detection_cfg.get("enabled", False))
+    secondary_detection_algorithm = str(secondary_detection_cfg.get("algorithm", "foreground")).strip().lower()
+    secondary_blob_detection_enabled = secondary_detection_enabled and secondary_detection_algorithm == "foreground"
+    secondary_kinetic_enabled = secondary_detection_enabled and secondary_detection_algorithm == "kinetic"
     export_track_clips_enabled = bool(cfg["output"].get("export_track_clips", False))
     fast_events_enabled = bool(cfg.get("fast_events", {}).get("enabled", False))
     heatmap_events_enabled = bool(cfg.get("heatmap_events", {}).get("enabled", False))
@@ -1043,6 +1087,23 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     )
     burst_gate = TemporalBurstGate.from_detection_cfg(cfg["detection"])
     detection_context = build_detection_context(background, cfg["detection"])
+    secondary_detection_runtime_stats: Dict[str, int] = {
+        "secondary_cuda_frames_used": 0,
+        "secondary_cuda_runtime_failures": 0,
+        "secondary_cuda_parity_checked_frames": 0,
+        "secondary_cuda_parity_mismatch_frames": 0,
+    }
+    secondary_detection_config = None
+    secondary_detection_context = None
+    if secondary_blob_detection_enabled:
+        secondary_detection_config = build_secondary_detection_config(cfg["detection"], secondary_detection_cfg)
+        secondary_detection_context = build_detection_context(background, secondary_detection_config)
+    secondary_primary_total = 0
+    secondary_raw_total = 0
+    secondary_added_total = 0
+    secondary_duplicate_total = 0
+    primary_detection_debug = []
+    secondary_detection_debug = []
 
     all_points: List[TrackPoint] = []
     frame_processed = 0
@@ -1063,6 +1124,38 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             frame_idx=frame_idx,
             perf=perf,
         )
+        if secondary_blob_detection_enabled:
+            primary_detection_debug.extend(dets)
+        if secondary_detection_config is not None and secondary_detection_context is not None:
+            secondary_stats_raw: Dict[str, int] = {}
+            secondary_dets = detect_foreground_blobs(
+                gray,
+                background,
+                secondary_detection_config,
+                valid_mask=valid_mask_for_detection,
+                compute_device=execution_plan.selected_device,
+                strict_parity=strict_parity,
+                runtime_stats=secondary_stats_raw,
+                context=secondary_detection_context,
+                frame_idx=frame_idx,
+                perf=perf,
+            )
+            secondary_detection_debug.extend(secondary_dets)
+            fused_dets, fusion_stats = fuse_detections(
+                dets,
+                secondary_dets,
+                dedupe_max_distance_px=float(secondary_detection_cfg.get("dedupe_max_distance_px", 8.0)),
+                dedupe_min_iou=float(secondary_detection_cfg.get("dedupe_min_iou", 0.10)),
+            )
+            dets = fused_dets
+            secondary_primary_total += fusion_stats.primary_count
+            secondary_raw_total += fusion_stats.secondary_count
+            secondary_added_total += fusion_stats.secondary_added
+            secondary_duplicate_total += fusion_stats.secondary_duplicates
+            for key, value in secondary_stats_raw.items():
+                secondary_detection_runtime_stats[f"secondary_{key}"] = (
+                    secondary_detection_runtime_stats.get(f"secondary_{key}", 0) + int(value)
+                )
         if burst_gate is not None and not burst_gate.should_keep(frame_idx, len(dets)):
             dets = []
             suppressed_burst_frames += 1
@@ -1092,6 +1185,37 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         meta.fps,
         valid_mask=valid_mask,
     )
+    secondary_kinetic_points: List[TrackPoint] = []
+    secondary_kinetic_added_points: List[TrackPoint] = []
+    secondary_kinetic_meta: Dict = {"enabled": secondary_kinetic_enabled}
+    secondary_kinetic_dedupe_meta: Dict = {}
+    secondary_kinetic_mask_meta: Dict = {}
+    if secondary_kinetic_enabled:
+        secondary_kinetic_points, secondary_kinetic_meta = run_kinetic_secondary_tracks(
+            input_video,
+            secondary_detection_cfg,
+            video_id=meta.video_id,
+            fps=meta.fps,
+        )
+        secondary_kinetic_points, secondary_kinetic_mask_meta = _filter_points_start_or_end_in_mask(
+            secondary_kinetic_points,
+            valid_gate_mask,
+        )
+        max_primary_track_id = max((point.track_id for point in filtered_points), default=0)
+        secondary_kinetic_added_points, secondary_kinetic_dedupe_meta = dedupe_secondary_track_points(
+            filtered_points,
+            secondary_kinetic_points,
+            max_overlap_distance_px=float(
+                secondary_detection_cfg.get("kinetic_dedupe_max_overlap_distance_px", 45.0)
+            ),
+            min_overlap_frames=int(secondary_detection_cfg.get("kinetic_dedupe_min_overlap_frames", 4)),
+            min_overlap_ratio=float(secondary_detection_cfg.get("kinetic_dedupe_min_overlap_ratio", 0.6)),
+            secondary_track_id_offset=max_primary_track_id + 1,
+        )
+        filtered_points = sorted(
+            [*filtered_points, *secondary_kinetic_added_points],
+            key=lambda point: (point.track_id, point.frame),
+        )
     perf.record("postprocess_stage", perf_counter() - postprocess_started, executions=1)
     progress.complete_stage("postprocess", detail="postprocess done")
 
@@ -1274,6 +1398,79 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         )
     overlay_path = out_dir / "tracks_overlay.png"
     cv2.imwrite(str(overlay_path), overlay)
+
+    detection_debug_outputs: Dict[str, str] = {
+        "primary_detections_overlay_png": "",
+        "secondary_detections_overlay_png": "",
+    }
+    if secondary_blob_detection_enabled:
+        primary_detection_overlay_path = out_dir / "primary_detections_overlay.png"
+        secondary_detection_overlay_path = out_dir / "secondary_detections_overlay.png"
+        primary_detection_overlay = render_detections_overlay(
+            background,
+            primary_detection_debug,
+            color=(0, 200, 255),
+            alpha=0.85,
+            line_thickness=1,
+            point_radius=2,
+        )
+        secondary_detection_overlay = render_detections_overlay(
+            background,
+            secondary_detection_debug,
+            color=(255, 80, 80),
+            alpha=0.85,
+            line_thickness=1,
+            point_radius=2,
+        )
+        cv2.imwrite(str(primary_detection_overlay_path), primary_detection_overlay)
+        cv2.imwrite(str(secondary_detection_overlay_path), secondary_detection_overlay)
+        detection_debug_outputs = {
+            "primary_detections_overlay_png": str(primary_detection_overlay_path.resolve()),
+            "secondary_detections_overlay_png": str(secondary_detection_overlay_path.resolve()),
+        }
+    secondary_kinetic_outputs: Dict[str, str] = {
+        "secondary_kinetic_tracks_csv": "",
+        "secondary_kinetic_tracks_overlay_png": "",
+        "secondary_kinetic_added_tracks_csv": "",
+        "secondary_kinetic_added_tracks_overlay_png": "",
+    }
+    if secondary_kinetic_enabled:
+        kinetic_tracks_csv_path = out_dir / "secondary_kinetic_tracks.csv"
+        kinetic_overlay_path = out_dir / "secondary_kinetic_tracks_overlay.png"
+        kinetic_added_csv_path = out_dir / "secondary_kinetic_added_tracks.csv"
+        kinetic_added_overlay_path = out_dir / "secondary_kinetic_added_tracks_overlay.png"
+        _write_tracks_csv(kinetic_tracks_csv_path, secondary_kinetic_points)
+        _write_tracks_csv(kinetic_added_csv_path, secondary_kinetic_added_points)
+        kinetic_overlay = render_tracks_overlay(
+            background_gray=background,
+            points=secondary_kinetic_points,
+            line_thickness=overlay_line_t,
+            start_radius=overlay_start_r,
+            alpha=overlay_alpha_v,
+            draw_track_labels=overlay_lbl,
+            draw_track_labels_at_end=overlay_lbl_end,
+            label_font_scale=overlay_lbl_scale,
+            label_thickness=overlay_lbl_th,
+        )
+        kinetic_added_overlay = render_tracks_overlay(
+            background_gray=background,
+            points=secondary_kinetic_added_points,
+            line_thickness=overlay_line_t,
+            start_radius=overlay_start_r,
+            alpha=overlay_alpha_v,
+            draw_track_labels=overlay_lbl,
+            draw_track_labels_at_end=overlay_lbl_end,
+            label_font_scale=overlay_lbl_scale,
+            label_thickness=overlay_lbl_th,
+        )
+        cv2.imwrite(str(kinetic_overlay_path), kinetic_overlay)
+        cv2.imwrite(str(kinetic_added_overlay_path), kinetic_added_overlay)
+        secondary_kinetic_outputs = {
+            "secondary_kinetic_tracks_csv": str(kinetic_tracks_csv_path.resolve()),
+            "secondary_kinetic_tracks_overlay_png": str(kinetic_overlay_path.resolve()),
+            "secondary_kinetic_added_tracks_csv": str(kinetic_added_csv_path.resolve()),
+            "secondary_kinetic_added_tracks_overlay_png": str(kinetic_added_overlay_path.resolve()),
+        }
     progress.complete_stage("exports_core", detail="csv and overlay exported")
 
     flight_trails_output = ""
@@ -1343,8 +1540,19 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             **_build_metrics(filtered_points, frame_processed),
             "frames_suppressed_temporal_burst": suppressed_burst_frames,
             "tracks_merged_auto": len(merges_applied),
+            "secondary_detection_primary_detections": secondary_primary_total,
+            "secondary_detection_raw_detections": secondary_raw_total,
+            "secondary_detection_added_detections": secondary_added_total,
+            "secondary_detection_duplicate_detections": secondary_duplicate_total,
+            "secondary_kinetic_tracks_raw": int(secondary_kinetic_dedupe_meta.get("secondary_tracks_raw", 0)),
+            "secondary_kinetic_tracks_added": int(secondary_kinetic_dedupe_meta.get("secondary_tracks_added", 0)),
+            "secondary_kinetic_tracks_duplicate": int(secondary_kinetic_dedupe_meta.get("secondary_tracks_duplicate", 0)),
+            "secondary_kinetic_tracks_rejected_by_mask": int(
+                secondary_kinetic_mask_meta.get("tracks_rejected_by_mask_filter", 0)
+            ),
             **background_runtime_stats,
             **detection_runtime_stats,
+            **secondary_detection_runtime_stats,
         },
         "execution": {
             "requested_device": execution_plan.requested_device,
@@ -1361,6 +1569,8 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "tracks_svg": str(tracks_svg_path.resolve()),
             "tracks_render_json": str(tracks_render_json_path.resolve()),
             "tracks_overlay_png": str(overlay_path.resolve()),
+            **detection_debug_outputs,
+            **secondary_kinetic_outputs,
             "flight_trails_overlay_video": flight_trails_output,
             "track_candidates_csv": (
                 str(track_candidates_csv_path.resolve())
@@ -1387,6 +1597,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
                     if reason
                 )
             ),
+        },
+        "secondary_kinetic": {
+            **secondary_kinetic_meta,
+            **secondary_kinetic_mask_meta,
+            **secondary_kinetic_dedupe_meta,
         },
         "fast_events": {
             "enabled": fast_events_enabled,

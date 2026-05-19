@@ -39,6 +39,16 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "temporal_burst_trigger_frames": 0,
         "temporal_burst_cooldown_frames": 0,
     },
+    "secondary_detection": {
+        "enabled": False,
+        "algorithm": "foreground",
+        "inherit_primary": True,
+        "dedupe_max_distance_px": 8.0,
+        "dedupe_min_iou": 0.10,
+        "kinetic_dedupe_max_overlap_distance_px": 45.0,
+        "kinetic_dedupe_min_overlap_frames": 4,
+        "kinetic_dedupe_min_overlap_ratio": 0.6,
+    },
     "tracking": {
         "max_distance": 60.0,
         "max_missed": 12,
@@ -244,6 +254,23 @@ def _validate_config(cfg: Dict[str, Any]) -> None:
     valid_region = cfg.get("valid_region", {})
     if not isinstance(valid_region, dict):
         raise ValueError("valid_region config must be a mapping/dictionary")
+
+    secondary_detection = cfg.get("secondary_detection", {})
+    if not isinstance(secondary_detection, dict):
+        raise ValueError("secondary_detection config must be a mapping/dictionary")
+    secondary_algorithm = str(secondary_detection.get("algorithm", "foreground")).strip().lower()
+    if secondary_algorithm not in {"foreground", "kinetic"}:
+        raise ValueError(
+            f"secondary_detection.algorithm must be one of foreground/kinetic, got: {secondary_algorithm}"
+        )
+    dedupe_max_distance_px = float(secondary_detection.get("dedupe_max_distance_px", 8.0))
+    if dedupe_max_distance_px < 0.0:
+        raise ValueError(
+            f"secondary_detection.dedupe_max_distance_px must be >= 0, got: {dedupe_max_distance_px}"
+        )
+    dedupe_min_iou = float(secondary_detection.get("dedupe_min_iou", 0.10))
+    if dedupe_min_iou < 0.0 or dedupe_min_iou > 1.0:
+        raise ValueError(f"secondary_detection.dedupe_min_iou must be between 0 and 1, got: {dedupe_min_iou}")
 
     background = cfg.get("background", {})
     if not isinstance(background, dict):

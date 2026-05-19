@@ -9,7 +9,7 @@ import cv2
 import numpy as np
 import yaml
 
-from bat_tracker.pipeline import _auto_merge_track_points, run_pipeline
+from bat_tracker.pipeline import _auto_merge_track_points, _filter_points_start_or_end_in_mask, run_pipeline
 from bat_tracker.render import export_tracks_render_json, export_tracks_svg
 from bat_tracker.tracker import TrackPoint
 from bat_tracker.trails import RealTimeTrailRenderer
@@ -112,6 +112,20 @@ def _make_single_track_video(tmp_path: Path) -> Path:
     return video_path
 
 
+def _make_bright_and_dim_tracks_video(tmp_path: Path) -> Path:
+    frames: list[np.ndarray] = []
+    for idx in range(10):
+        frame = np.zeros((64, 96), dtype=np.uint8)
+        if idx < 6:
+            cv2.rectangle(frame, (8 + idx * 5, 16), (14 + idx * 5, 22), 230, -1)
+            cv2.rectangle(frame, (12 + idx * 5, 42), (18 + idx * 5, 48), 55, -1)
+        frames.append(frame)
+
+    video_path = tmp_path / "bright_dim_tracks.mp4"
+    _write_video(video_path, frames)
+    return video_path
+
+
 def test_pipeline_exports_svg_and_render_json_from_in_memory_tracks(tmp_path: Path) -> None:
     video_path = _make_single_track_video(tmp_path)
 
@@ -193,6 +207,60 @@ def test_pipeline_exports_svg_and_render_json_from_in_memory_tracks(tmp_path: Pa
     assert meta["outputs"]["tracks_svg"] == str((out_dir / "tracks.svg").resolve())
     assert meta["outputs"]["tracks_render_json"] == str((out_dir / "tracks_render.json").resolve())
     assert meta["outputs"]["flight_trails_overlay_video"] == ""
+
+
+def test_pipeline_secondary_detection_adds_missing_dim_track(tmp_path: Path) -> None:
+    video_path = _make_bright_and_dim_tracks_video(tmp_path)
+
+    cfg = _base_config()
+    cfg["detection"]["diff_threshold"] = 120
+    cfg["secondary_detection"] = {
+        "enabled": True,
+        "inherit_primary": True,
+        "diff_threshold": 20,
+        "dedupe_max_distance_px": 8.0,
+        "dedupe_min_iou": 0.10,
+    }
+    cfg_path = tmp_path / "cfg_secondary.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    out_dir = tmp_path / "out_secondary"
+    meta = run_pipeline(str(video_path), str(out_dir), str(cfg_path))
+    tracks_rows = _read_tracks(out_dir / "tracks.csv")
+
+    assert len({row["track_id"] for row in tracks_rows}) == 2
+    assert meta["metrics"]["secondary_detection_raw_detections"] > 0
+    assert meta["metrics"]["secondary_detection_added_detections"] > 0
+    assert meta["metrics"]["secondary_detection_duplicate_detections"] > 0
+    primary_overlay = out_dir / "primary_detections_overlay.png"
+    secondary_overlay = out_dir / "secondary_detections_overlay.png"
+    assert primary_overlay.exists()
+    assert secondary_overlay.exists()
+    assert meta["outputs"]["primary_detections_overlay_png"] == str(primary_overlay.resolve())
+    assert meta["outputs"]["secondary_detections_overlay_png"] == str(secondary_overlay.resolve())
+    assert int(np.count_nonzero(cv2.imread(str(primary_overlay), cv2.IMREAD_COLOR))) > 0
+    assert int(np.count_nonzero(cv2.imread(str(secondary_overlay), cv2.IMREAD_COLOR))) > 0
+
+
+def test_secondary_points_are_filtered_by_start_or_end_mask() -> None:
+    mask = np.zeros((80, 80), dtype=np.uint8)
+    mask[10:30, 10:30] = 255
+    points = [
+        _make_track_point(1, 0, 12, 12),
+        _make_track_point(1, 1, 60, 60),
+        _make_track_point(2, 0, 50, 50),
+        _make_track_point(2, 1, 55, 55),
+        _make_track_point(3, 0, 55, 55),
+        _make_track_point(3, 1, 20, 20),
+    ]
+
+    kept, meta = _filter_points_start_or_end_in_mask(points, mask)
+
+    assert {point.track_id for point in kept} == {1, 3}
+    assert meta["mask_filter_enabled"] is True
+    assert meta["tracks_before_mask_filter"] == 3
+    assert meta["tracks_after_mask_filter"] == 2
+    assert meta["tracks_rejected_by_mask_filter"] == 1
 
 
 def test_realtime_trails_keep_coherent_motion_and_reject_local_jitter() -> None:

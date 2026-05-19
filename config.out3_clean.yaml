@@ -24,6 +24,16 @@ detection:
   temporal_burst_window_frames: 10
   temporal_burst_trigger_frames: 3
   temporal_burst_cooldown_frames: 24
+secondary_detection:
+  enabled: true
+  algorithm: kinetic
+  inherit_primary: true
+  auto_calibrate: true
+  temporal_smooth: 0.3
+  morph_close_iters: 1
+  kinetic_dedupe_max_overlap_distance_px: 45.0
+  kinetic_dedupe_min_overlap_frames: 4
+  kinetic_dedupe_min_overlap_ratio: 0.6
 tracking:
   max_distance: 120.0
   max_missed: 12
