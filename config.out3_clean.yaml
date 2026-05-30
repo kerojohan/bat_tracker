@@ -9,6 +9,7 @@ detection:
   threshold_mode: fixed
   diff_threshold: 18
   otsu_offset: 0
+  centroid_mode: moments
   morph_open: 3
   morph_close: 3
   min_area: 12
@@ -35,6 +36,10 @@ secondary_detection:
   kinetic_dedupe_min_overlap_frames: 4
   kinetic_dedupe_min_overlap_ratio: 0.6
 tracking:
+  tracker: kalman
+  kalman_sigma_acc: 3.0
+  kalman_measurement_std: 2.0
+  kalman_high_area_threshold: 0.0
   max_distance: 120.0
   max_missed: 12
   min_track_length: 6
@@ -43,6 +48,7 @@ tracking:
   min_track_path_length: 28.0
   min_track_straightness: 0.08
   require_start_or_end_in_valid_region: true
+  valid_region_mode: annotate
   valid_region_gate_dilate_px: 20
   auto_merge_suggested: true
   merge_max_gap_frames: 12
@@ -50,6 +56,9 @@ tracking:
   merge_overlap_min_common_frames: 3
   merge_overlap_max_mean_distance: 60.0
   merge_overlap_min_direction_cosine: 0.8
+  merge_max_group_overlap_frames: 6
+  merge_duplicate_max_distance: 12.0
+  merge_max_group_size: 6
   export_track_candidates: true
 valid_region:
   enabled: true
@@ -97,7 +106,7 @@ output:
   trajectory_smoothing_enabled: false
   trajectory_smoothing_window: 5
 flight_trails:
-  enabled: false
+  enabled: true
   video_filename: flight_trails_overlay.mp4
   history_frames: 12
   max_track_gap_frames: 2

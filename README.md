@@ -111,8 +111,9 @@ Se escriben en la carpeta indicada por `--output`:
 - `flight_trails_overlay.mp4` (opcional): video con estelas temporales superpuestas sobre el video original cuando `flight_trails.enabled` esta activo.
 - `track_clips/` (opcional): clips de video por track (`track_0001_000120-000186.mp4`, etc.).
 - `meta.json`: metadatos del video, parametros efectivos y metricas de ejecucion.
-  - incluye bloques `video`, `parameters`, `background`, `valid_region`, `metrics`, `execution`, `performance`, `outputs`, `trajectory_smoothing` y `postprocess`.
+  - incluye bloques `video`, `parameters`, `background`, `valid_region`, `metrics`, `execution`, `performance`, `outputs`, `trajectory_smoothing`, `postprocess` y `track_quality`.
   - `postprocess` resume tambien cuantos candidatos se aceptaron/rechazaron y las causas mas frecuentes.
+  - `track_quality` evalua la calidad de las trayectorias sin necesidad de ground truth: distribuciones de longitud/duracion/desplazamiento/rectitud, resumen de fusiones (`merges_by_reason`, `max_merge_group_size`) y `over_merge_suspect_tracks` (tracks largos con rectitud muy baja, candidatos a contener varios murcielagos fundidos).
 
 ## Formato de tracks.csv
 
@@ -136,8 +137,8 @@ Columnas exactas:
 4. Umbral binario (fijo u Otsu) + morfologia (open/close) + contornos.
 5. Filtrado de blobs por area minima/maxima.
 6. Fusion opcional de un segundo detector (`secondary_detection`) antes del tracker: conserva las detecciones primarias y anade solo las secundarias que no coinciden por distancia/IoU.
-7. Tracking 2D frame a frame con asignacion greedy por distancia maxima y prediccion por velocidad para reducir cortes.
-8. Merge automatico opcional de tracks fragmentados antes del filtrado final.
+7. Tracking 2D frame a frame. Por defecto usa un tracker con filtro de Kalman (velocidad constante) y asociacion en dos fases estilo ByteTrack (`tracking.tracker: kalman`); tambien disponible el tracker `greedy` clasico (Hungarian + prediccion por velocidad).
+8. Merge automatico opcional, conservador y no transitivo, de tracks fragmentados antes del filtrado final (con guardas anti-coexistencia y tope de grupo para no fundir murcielagos distintos).
 9. Evaluacion centralizada de tracks candidatos (score + motivos de rechazo) y export de `tracks.csv`, `events.csv`, `tracks.svg`, `tracks_render.json` y render final `tracks_overlay.png`.
 10. Export opcional de `flight_trails_overlay.mp4` con estelas temporales acumuladas sobre el video original si `flight_trails.enabled`.
 11. Si `valid_region.enabled`, calculo de banda vertical valida desde iluminacion horizontal y guardado en `valid_region/*`.
@@ -155,8 +156,10 @@ Usa `config.yaml.example` como base.
 - `background.context_start_sec`: segundo inicial de la ventana usada para estimar `background.png`
 - `background.context_duration_sec`: duracion de esa ventana; `-1` usa el video entero
 - `detection.*`: parametros de blur, threshold, morfologia y area
-  - `detection.threshold_mode`: `fixed` o `otsu`
+  - `detection.threshold_mode`: `fixed`, `otsu` o `adaptive` (umbral local, robusto frente a vignette IR y estelas tenues; recupera blobs debiles para la 2a fase del tracker)
   - `detection.otsu_offset`: ajuste fino sobre umbral Otsu (negativo = mas sensible)
+  - `detection.adaptive_block_size` / `detection.adaptive_c`: solo en modo `adaptive`; tamano de ventana local (impar >= 3) y offset (mas negativo = mas sensible)
+  - `detection.centroid_mode`: `bbox` (centro del bounding box, por defecto) o `moments` (centroide de masa real, mas estable para estelas alargadas/curvas; reduce ID-switches)
   - `detection.max_global_intensity_shift`: descarta frame si el brillo medio difiere demasiado del fondo (`-1` desactiva)
   - `detection.max_foreground_ratio`: descarta frame si el porcentaje de foreground es demasiado alto (`-1` desactiva)
   - `detection.max_detections_per_frame`: descarta frame si supera este numero de blobs (`0` desactiva)
@@ -175,6 +178,14 @@ Usa `config.yaml.example` como base.
   - cualquier otro campo del bloque sobrescribe el parametro equivalente de `detection.*` solo para la segunda pasada.
   - en modo `kinetic`, se usa la implementacion incorporada en `bat_tracker/vendor/fast_tracker`; `secondary_detection.script_path` queda como override opcional para pruebas externas. Los parametros `auto_calibrate`, `temporal_smooth`, `morph_close_iters`, etc. se pasan a ese algoritmo; los tracks resultantes se exportan en `secondary_kinetic_tracks.csv` y los faltantes no duplicados en `secondary_kinetic_added_tracks.csv`.
 - `tracking.*`: distancia maxima de asociacion, tolerancia a frames perdidos y filtros minimos por trayectoria
+  - `tracking.tracker`: `kalman` (por defecto; filtro de Kalman de velocidad constante + asociacion en dos fases estilo ByteTrack) o `greedy` (Hungarian por distancia + prediccion por velocidad)
+  - `tracking.kalman_sigma_acc`: ruido de aceleracion del modelo (px/frame^2); valores mayores toleran trayectorias mas erraticas
+  - `tracking.kalman_measurement_std`: ruido de medida del centroide (px)
+  - `tracking.kalman_high_area_threshold`: area minima para considerar una deteccion "fuerte" (1a fase); las mas pequenas/tenues se asocian en la 2a fase y no crean tracks nuevos
+  - `tracking.valid_region_mode`: `annotate` (por defecto; la region valida solo etiqueta `in_valid_region`/`direction` y NO borra tracks) o `gate` (descarta los tracks que no empiezan ni acaban dentro de la gate). El modo `gate` requiere ademas `require_start_or_end_in_valid_region: true`
+  - `tracking.merge_max_group_overlap_frames`: anti-coexistencia; numero maximo de frames compartidos entre dos grupos al fusionarlos (evita unir murcielagos paralelos del mismo corredor)
+  - `tracking.merge_duplicate_max_distance`: distancia media para considerar dos tracks "la misma deteccion" y permitir su fusion pese al solape temporal (track duplicado real)
+  - `tracking.merge_max_group_size`: anti-transitividad; tope de tracks distintos por grupo fusionado (`0` = sin tope)
   - `tracking.min_track_length`: minimo de puntos por trayectoria
   - `tracking.min_track_duration_sec`: duracion minima en segundos (si se define, se combina con `min_track_length`)
   - `tracking.min_track_displacement`: desplazamiento neto minimo (pixeles)

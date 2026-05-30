@@ -32,10 +32,12 @@ from .heatmap_events import reconstruct_heatmap_events
 from .heatmap_events import render_heatmap_events_overlay
 from .heatmap_events import write_heatmap_events_csv
 from .heatmap_events import write_heatmap_tracks_csv
+from .kalman_tracker import KalmanTracker
 from .kinetic_secondary import dedupe_secondary_track_points
 from .kinetic_secondary import run_kinetic_secondary_tracks
 from .perf import PerformanceCollector
 from .render import export_tracks_render_json, export_tracks_svg, render_detections_overlay, render_tracks_overlay
+from .track_quality import compute_track_quality
 from .track_smoothing import smooth_track_points
 from .tracker import GreedyTracker, TrackPoint
 from .trails import export_realtime_trails_video
@@ -496,6 +498,11 @@ def _filter_track_points(
     min_track_path_length = float(tracking_cfg.get("min_track_path_length", 0.0))
     min_track_straightness = float(tracking_cfg.get("min_track_straightness", 0.0))
     require_start_or_end_in_valid_region = bool(tracking_cfg.get("require_start_or_end_in_valid_region", False))
+    # En modo "annotate" la región válida solo etiqueta (in_valid_region,
+    # direction) y NO borra tracks; en modo "gate" sí descarta los que no
+    # tocan la gate. Para calidad de trayectorias, annotate es el defecto.
+    valid_region_mode = str(tracking_cfg.get("valid_region_mode", "annotate")).strip().lower()
+    gate_deletes = valid_region_mode == "gate"
     gate_mask = _build_valid_region_gate_mask(valid_mask, tracking_cfg)
     strong_short_score_min = 0.9
 
@@ -541,7 +548,7 @@ def _filter_track_points(
             s_in = _point_in_mask(start, gate_mask)
             e_in = _point_in_mask(end, gate_mask)
             direction = _classify_direction_full(s_in, e_in, track_points, valid_mask)
-            if not (s_in or e_in):
+            if gate_deletes and not (s_in or e_in):
                 reject_reasons.append("valid_region_gate")
         elif valid_mask is not None:
             s_in = _point_in_mask(start, valid_mask)
@@ -627,8 +634,22 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
     min_overlap_cos = float(tracking_cfg.get("merge_overlap_min_direction_cosine", 0.8))
     local_overlap_min_cos = max(0.65, min_overlap_cos - 0.15)
     proximity_override_dist = float(tracking_cfg.get("merge_overlap_proximity_override_distance", 0.0))
+    # Guardas anti-transitividad / anti-coexistencia:
+    # - max_group_overlap_frames: dos grupos no pueden fusionarse si comparten
+    #   demasiados frames (murcielagos distintos que vuelan en paralelo por el
+    #   mismo corredor), salvo que sean practicamente la misma deteccion.
+    # - duplicate_max_distance: umbral de "misma deteccion" que permite fusionar
+    #   pese al solape temporal (track duplicado real).
+    # - max_group_size: tope de tracks distintos por grupo fusionado.
+    max_group_overlap_frames = int(tracking_cfg.get("merge_max_group_overlap_frames", 6))
+    duplicate_max_distance = float(tracking_cfg.get("merge_duplicate_max_distance", 12.0))
+    max_group_size = int(tracking_cfg.get("merge_max_group_size", 0))
 
     parent: Dict[int, int] = {track_id: track_id for track_id in by_track}
+    group_frames: Dict[int, set] = {
+        track_id: {p.frame for p in pts} for track_id, pts in by_track.items()
+    }
+    group_members: Dict[int, set] = {track_id: {track_id} for track_id in by_track}
 
     def find(track_id: int) -> int:
         while parent[track_id] != track_id:
@@ -636,15 +657,16 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
             track_id = parent[track_id]
         return track_id
 
-    def union(a: int, b: int) -> None:
+    def union(a: int, b: int) -> int:
         ra = find(a)
         rb = find(b)
         if ra == rb:
-            return
-        if ra < rb:
-            parent[rb] = ra
-        else:
-            parent[ra] = rb
+            return ra
+        keep, drop = (ra, rb) if ra < rb else (rb, ra)
+        parent[drop] = keep
+        group_frames[keep] |= group_frames[drop]
+        group_members[keep] |= group_members[drop]
+        return keep
 
     merges_applied: List[Dict] = []
     track_ids = sorted(by_track.keys())
@@ -792,8 +814,29 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
         rb = find(track_b_id)
         if ra == rb:
             continue
+
+        # Guarda anti-coexistencia: no fusionar grupos que ya comparten muchos
+        # frames (vuelos paralelos distintos), salvo que sea practicamente la
+        # misma deteccion (track duplicado real, distancia media minima).
+        shared_frames = len(group_frames[ra] & group_frames[rb])
+        mean_distance_val = reason_data.get("mean_distance")
+        is_duplicate = (
+            mean_distance_val is not None
+            and float(mean_distance_val) <= duplicate_max_distance
+        )
+        if (
+            max_group_overlap_frames >= 0
+            and shared_frames > max_group_overlap_frames
+            and not is_duplicate
+        ):
+            continue
+
+        # Guarda anti-transitividad: tope de tracks distintos por grupo.
+        if max_group_size > 0 and len(group_members[ra] | group_members[rb]) > max_group_size:
+            continue
+
         union(track_a_id, track_b_id)
-        merged_to = min(find(track_a_id), find(track_b_id))
+        merged_to = find(track_a_id)
         merges_applied.append(
             {
                 "track_a": track_a_id,
@@ -928,6 +971,29 @@ def _export_track_clips(
             writer.release()
 
     return clip_paths
+
+
+def _build_tracker(tracking_cfg: Dict, fps: float, video_id: str):
+    """Construye el tracker según ``tracking.tracker`` (kalman|greedy)."""
+    kind = str(tracking_cfg.get("tracker", "kalman")).strip().lower()
+    max_distance = float(tracking_cfg["max_distance"])
+    max_missed = int(tracking_cfg["max_missed"])
+    if kind == "greedy":
+        return GreedyTracker(
+            max_distance=max_distance,
+            max_missed=max_missed,
+            fps=fps,
+            video_id=video_id,
+        )
+    return KalmanTracker(
+        max_distance=max_distance,
+        max_missed=max_missed,
+        fps=fps,
+        video_id=video_id,
+        sigma_acc=float(tracking_cfg.get("kalman_sigma_acc", 3.0)),
+        measurement_std=float(tracking_cfg.get("kalman_measurement_std", 2.0)),
+        high_area_threshold=float(tracking_cfg.get("kalman_high_area_threshold", 0.0)),
+    )
 
 
 def run_pipeline(input_video: str, output_dir: str, config_path: str | None = None) -> Dict:
@@ -1079,12 +1145,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         }
         progress.complete_stage("valid_region", detail="valid region ready")
 
-    tracker = GreedyTracker(
-        max_distance=float(cfg["tracking"]["max_distance"]),
-        max_missed=int(cfg["tracking"]["max_missed"]),
-        fps=meta.fps,
-        video_id=meta.video_id,
-    )
+    tracker = _build_tracker(cfg["tracking"], fps=meta.fps, video_id=meta.video_id)
     burst_gate = TemporalBurstGate.from_detection_cfg(cfg["detection"])
     detection_context = build_detection_context(background, cfg["detection"])
     secondary_detection_runtime_stats: Dict[str, int] = {
@@ -1618,6 +1679,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "source_track_points": len(smoothed_points) if smoothed_points is not None else len(filtered_points),
             "output_video": flight_trails_output,
         },
+        "track_quality": compute_track_quality(
+            filtered_points,
+            fps=meta.fps,
+            merges_applied=merges_applied,
+        ),
     }
 
     meta_path = out_dir / "meta.json"
