@@ -47,8 +47,8 @@ tracking:
   min_track_displacement: 12.0
   min_track_path_length: 18.0
   min_track_straightness: 0.0
-  require_start_or_end_in_valid_region: false
-  valid_region_mode: annotate
+  require_start_or_end_in_valid_region: true
+  valid_region_mode: gate
   valid_region_gate_dilate_px: 0
   auto_merge_suggested: false
   merge_max_gap_frames: 12

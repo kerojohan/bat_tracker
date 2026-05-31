@@ -556,9 +556,10 @@ def _filter_track_points(
     min_track_path_length = float(tracking_cfg.get("min_track_path_length", 0.0))
     min_track_straightness = float(tracking_cfg.get("min_track_straightness", 0.0))
     require_start_or_end_in_valid_region = bool(tracking_cfg.get("require_start_or_end_in_valid_region", False))
-    # En modo "annotate" la región válida solo etiqueta (in_valid_region,
-    # direction) y NO borra tracks; en modo "gate" sí descarta los que no
-    # tocan la gate. Para calidad de trayectorias, annotate es el defecto.
+    # Compat v1.1.11: si require_start_or_end_in_valid_region=true, el track
+    # debe tocar la máscara (inicio o fin) independientemente de valid_region_mode.
+    # valid_region_mode="gate" mantiene además el comportamiento de descarte
+    # explícito por gate cuando se evalúa región válida.
     valid_region_mode = str(tracking_cfg.get("valid_region_mode", "annotate")).strip().lower()
     gate_deletes = valid_region_mode == "gate"
     gate_mask = _build_valid_region_gate_mask(valid_mask, tracking_cfg)
@@ -730,7 +731,7 @@ def _filter_track_points(
             s_in = _point_in_mask(start, gate_mask)
             e_in = _point_in_mask(end, gate_mask)
             direction = _classify_direction_full(s_in, e_in, track_points, valid_mask)
-            if gate_deletes and not (s_in or e_in):
+            if not (s_in or e_in):
                 reject_reasons.append("valid_region_gate")
         elif valid_mask is not None:
             s_in = _point_in_mask(start, valid_mask)

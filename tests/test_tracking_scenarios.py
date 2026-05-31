@@ -183,7 +183,7 @@ def _filter_cfg(mode: str) -> dict:
     }
 
 
-def test_valid_region_annotate_keeps_out_of_gate_track_but_gate_deletes_it() -> None:
+def test_valid_region_require_start_or_end_rejects_out_of_gate_track_in_any_mode() -> None:
     # Mascara valida en una banda; un track que vive completamente fuera.
     mask = np.zeros((400, 400), dtype=np.uint8)
     mask[:, 150:250] = 255  # banda valida central
@@ -194,12 +194,30 @@ def test_valid_region_annotate_keeps_out_of_gate_track_but_gate_deletes_it() -> 
     kept_annotate, assess_annotate = _filter_track_points(points, _filter_cfg("annotate"), FPS, valid_mask=mask)
     kept_gate, assess_gate = _filter_track_points(points, _filter_cfg("gate"), FPS, valid_mask=mask)
 
-    # annotate conserva el track (no borra), pero lo etiqueta como fuera.
-    assert {p.track_id for p in kept_annotate} == {1}
-    assert assess_annotate[0]["accepted"] is True
+    # Con require_start_or_end=true (compat v1.1.11), annotate también
+    # descarta tracks que no tocan la gate.
+    assert kept_annotate == []
+    assert assess_annotate[0]["accepted"] is False
     assert assess_annotate[0]["start_in_valid_region"] is False
+    assert "valid_region_gate" in assess_annotate[0]["reject_reasons"]
 
     # gate lo descarta por valid_region_gate.
     assert kept_gate == []
     assert assess_gate[0]["accepted"] is False
     assert "valid_region_gate" in assess_gate[0]["reject_reasons"]
+
+
+def test_valid_region_annotate_keeps_out_of_gate_track_when_not_required() -> None:
+    mask = np.zeros((400, 400), dtype=np.uint8)
+    mask[:, 150:250] = 255
+    points: List[TrackPoint] = []
+    for f in range(10):
+        points.append(_point(1, f, 10.0 + 5.0 * f, 350.0))
+
+    cfg = _filter_cfg("annotate")
+    cfg["require_start_or_end_in_valid_region"] = False
+    kept, assess = _filter_track_points(points, cfg, FPS, valid_mask=mask)
+
+    assert {p.track_id for p in kept} == {1}
+    assert assess[0]["accepted"] is True
+    assert assess[0]["start_in_valid_region"] is False
