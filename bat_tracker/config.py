@@ -173,6 +173,10 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "vegetation_noise": {
         "enabled": False,
         "input_mask": "",
+        # Scale pixel-based vegetation parameters by resolution using this reference size.
+        "auto_scale_with_resolution": True,
+        "reference_width": 1024,
+        "reference_height": 576,
         "mask_dilate_px": 0,
         # If True, remove every track point that falls inside vegetation mask.
         "drop_all_points_in_mask": False,

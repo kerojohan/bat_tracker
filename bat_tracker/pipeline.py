@@ -486,6 +486,36 @@ def _build_valid_region_gate_mask(valid_mask: np.ndarray | None, tracking_cfg: D
     return gate_mask
 
 
+def _scale_vegetation_params_for_resolution(vegetation_cfg: Dict, width: int, height: int) -> tuple[int, int]:
+    """Scale px-based vegetation parameters to preserve behavior across resolutions."""
+    dilate_px = max(0, int(vegetation_cfg.get("mask_dilate_px", 0)))
+    min_component_area = max(1, int(vegetation_cfg.get("auto_min_component_area", 24)))
+
+    if not bool(vegetation_cfg.get("auto_scale_with_resolution", True)):
+        return dilate_px, min_component_area
+
+    ref_w = max(1, int(vegetation_cfg.get("reference_width", 1024)))
+    ref_h = max(1, int(vegetation_cfg.get("reference_height", 576)))
+    target_w = max(1, int(width))
+    target_h = max(1, int(height))
+
+    # Linear scale for radius-like params; area scale for connected-component area.
+    ref_diag = max(1.0, hypot(float(ref_w), float(ref_h)))
+    target_diag = max(1.0, hypot(float(target_w), float(target_h)))
+    linear_scale = target_diag / ref_diag
+    area_scale = (float(target_w) * float(target_h)) / (float(ref_w) * float(ref_h))
+
+    scaled_dilate = int(round(float(dilate_px) * linear_scale))
+    if dilate_px > 0 and scaled_dilate < 1:
+        scaled_dilate = 1
+
+    scaled_min_area = int(round(float(min_component_area) * area_scale))
+    if min_component_area > 0 and scaled_min_area < 1:
+        scaled_min_area = 1
+
+    return max(0, scaled_dilate), max(1, scaled_min_area)
+
+
 def _filter_points_start_or_end_in_mask(
     points: List[TrackPoint],
     mask: np.ndarray | None,
@@ -1335,6 +1365,9 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
 
     vegetation_cfg = cfg.get("vegetation_noise", {})
     if bool(vegetation_cfg.get("enabled", False)):
+        scaled_dilate_px, scaled_min_component_area = _scale_vegetation_params_for_resolution(
+            vegetation_cfg, meta.width, meta.height
+        )
         vegetation_mask_input = str(vegetation_cfg.get("input_mask", "")).strip()
         if vegetation_mask_input:
             vegetation_mask = load_valid_region_mask(vegetation_mask_input)
@@ -1343,7 +1376,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
                     "vegetation_noise.input_mask shape does not match the processing frame size: "
                     f"expected {background.shape[:2]}, got {vegetation_mask.shape[:2]}"
                 )
-            dilate_px = max(0, int(vegetation_cfg.get("mask_dilate_px", 0)))
+            dilate_px = scaled_dilate_px
             if dilate_px > 0:
                 k = 2 * dilate_px + 1
                 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
@@ -1355,9 +1388,9 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
                 sample_frames=int(vegetation_cfg.get("auto_sample_frames", 220)),
                 max_frame_for_sampling=int(vegetation_cfg.get("auto_max_frame_for_sampling", 1250)),
                 percentile=float(vegetation_cfg.get("auto_percentile", 85.0)),
-                min_component_area=int(vegetation_cfg.get("auto_min_component_area", 24)),
+                min_component_area=scaled_min_component_area,
             )
-            dilate_px = max(0, int(vegetation_cfg.get("mask_dilate_px", 0)))
+            dilate_px = scaled_dilate_px
             if dilate_px > 0:
                 k = 2 * dilate_px + 1
                 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
