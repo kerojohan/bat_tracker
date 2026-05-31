@@ -80,6 +80,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     },
     "fast_events": {
         "enabled": False,
+        "require_entry_or_exit": False,
         "include_rejected_candidates": True,
         "include_accepted_tracks": True,
         "first_event_id": 10001,
@@ -168,6 +169,21 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "bottom_contour_regularization_mix": 0.75,
         "bottom_contour_deepest_strong_ratio": 0.70,
         "output_subdir": "valid_region",
+    },
+    "vegetation_noise": {
+        "enabled": False,
+        "input_mask": "",
+        "mask_dilate_px": 0,
+        # If True, remove every track point that falls inside vegetation mask.
+        "drop_all_points_in_mask": False,
+        "auto_sample_frames": 220,
+        "auto_max_frame_for_sampling": 1250,
+        "auto_percentile": 85.0,
+        "auto_min_component_area": 24,
+        # Points inside vegetation mask with very low normalized speed are treated as jitter noise.
+        "min_motion_ratio_per_sec": 0.25,
+        # Require at least this many consecutive noisy points before removing the run.
+        "min_consecutive_points": 3,
     },
     "flight_trails": {
         "enabled": False,

@@ -122,6 +122,42 @@ def test_fast_events_disabled_returns_no_events() -> None:
     assert reconstruct_fast_events(points, assessments, _cfg(enabled=False), frame_shape=(120, 120)) == []
 
 
+def test_fast_events_require_entry_or_exit_filters_inside_tracks() -> None:
+    points = [
+        _point(1, 0, 95, 95),
+        _point(1, 1, 80, 80),
+        _point(1, 2, 65, 65),
+        _point(1, 3, 50, 50),
+    ]
+    assessments = [{"track_id": "1", "accepted": "True", "reject_reasons": "", "direction": "inside"}]
+
+    events = reconstruct_fast_events(
+        points,
+        assessments,
+        {**_cfg(), "require_entry_or_exit": True},
+        frame_shape=(120, 120),
+    )
+    assert events == []
+
+
+def test_fast_events_require_entry_or_exit_keeps_exit_tracks() -> None:
+    points = [
+        _point(1, 0, 100, 100),
+        _point(1, 1, 85, 82),
+        _point(1, 2, 70, 64),
+        _point(1, 3, 55, 46),
+    ]
+    assessments = [{"track_id": "1", "accepted": "True", "reject_reasons": "", "direction": "exit"}]
+
+    events = reconstruct_fast_events(
+        points,
+        assessments,
+        {**_cfg(), "require_entry_or_exit": True},
+        frame_shape=(120, 120),
+    )
+    assert len(events) == 1
+
+
 def test_heatmap_events_reconstruct_motion_corridor(tmp_path: Path) -> None:
     frames: list[np.ndarray] = []
     for idx in range(12):

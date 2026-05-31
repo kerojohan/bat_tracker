@@ -1,7 +1,7 @@
 background:
   sample_frames: 120
   uniform_sampling: true
-  input_image: ""
+  input_image: ''
   context_start_sec: 0.0
   context_duration_sec: -1.0
 detection:
@@ -42,15 +42,15 @@ tracking:
   kalman_high_area_threshold: 0.0
   max_distance: 120.0
   max_missed: 12
-  min_track_length: 6
-  min_track_duration_sec: 0.1
-  min_track_displacement: 20.0
-  min_track_path_length: 28.0
-  min_track_straightness: 0.08
-  require_start_or_end_in_valid_region: true
+  min_track_length: 1
+  min_track_duration_sec: 0.0
+  min_track_displacement: 12.0
+  min_track_path_length: 18.0
+  min_track_straightness: 0.0
+  require_start_or_end_in_valid_region: false
   valid_region_mode: annotate
-  valid_region_gate_dilate_px: 20
-  auto_merge_suggested: true
+  valid_region_gate_dilate_px: 0
+  auto_merge_suggested: false
   merge_max_gap_frames: 12
   merge_max_endpoint_distance: 100.0
   merge_overlap_min_common_frames: 3
@@ -60,13 +60,15 @@ tracking:
   merge_duplicate_max_distance: 12.0
   merge_max_group_size: 6
   export_track_candidates: true
+fast_events:
+  require_entry_or_exit: true
 valid_region:
   enabled: true
   method: hybrid_deep_layer_profile
   apply_to_detection: false
   hybrid_combine_mode: and
-  input_image: ""
-  input_mask: ""
+  input_image: ''
+  input_mask: /tmp/bt_compare/cave_mask_from_image/mask.png
   context_start_sec: 0.0
   context_duration_sec: 75.0
   blur_kernel_size: 151
@@ -77,8 +79,16 @@ valid_region:
   depth_percentile: 85.0
   depth_morph_kernel: 9
   depth_min_area_ratio: 0.02
-  depth_layer_percentiles: [82, 78, 72, 66]
-  depth_layer_dilate_px: [0, 0, 0, 0]
+  depth_layer_percentiles:
+  - 82
+  - 78
+  - 72
+  - 66
+  depth_layer_dilate_px:
+  - 0
+  - 0
+  - 0
+  - 0
   bottom_contour_snap_enabled: true
   bottom_contour_search_up_px: 20
   bottom_contour_search_down_px: 110
@@ -90,6 +100,17 @@ valid_region:
   bottom_contour_regularization_mix: 0.9
   bottom_contour_deepest_strong_ratio: 0.62
   output_subdir: valid_region
+vegetation_noise:
+  enabled: true
+  input_mask: ''
+  mask_dilate_px: 0
+  drop_all_points_in_mask: true
+  auto_sample_frames: 220
+  auto_max_frame_for_sampling: 1250
+  auto_percentile: 92.0
+  auto_min_component_area: 24
+  min_motion_ratio_per_sec: 0.25
+  min_consecutive_points: 3
 output:
   overlay_line_thickness: 2
   overlay_start_radius: 5
@@ -106,16 +127,16 @@ output:
   trajectory_smoothing_enabled: false
   trajectory_smoothing_window: 5
 flight_trails:
-  enabled: true
+  enabled: false
   video_filename: flight_trails_overlay.mp4
   history_frames: 12
   max_track_gap_frames: 2
-  decay: 0.90
+  decay: 0.9
   segment_thickness: 3
   point_radius: 2
   segment_intensity: 1.0
   point_intensity: 1.35
-  overlay_alpha: 0.60
+  overlay_alpha: 0.6
   colormap: inferno
   clip_percentile: 99.0
   max_normalization_value: 0.0
@@ -123,5 +144,5 @@ flight_trails:
   min_segment_displacement_px: 4.0
   min_recent_displacement_px: 10.0
   min_recent_path_length_px: 14.0
-  min_recent_straightness: 0.20
+  min_recent_straightness: 0.2
   stationary_radius_px: 14.0
