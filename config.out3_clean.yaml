@@ -103,12 +103,12 @@ valid_region:
 vegetation_noise:
   enabled: true
   input_mask: ''
-  mask_dilate_px: 0
+  mask_dilate_px: 3
   drop_all_points_in_mask: true
-  auto_sample_frames: 220
+  auto_sample_frames: 400
   auto_max_frame_for_sampling: 1250
-  auto_percentile: 92.0
-  auto_min_component_area: 24
+  auto_percentile: 88.0
+  auto_min_component_area: 12
   min_motion_ratio_per_sec: 0.25
   min_consecutive_points: 3
 output:
