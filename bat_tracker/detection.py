@@ -51,6 +51,9 @@ class DetectionContext:
     process_y0: int
     process_y1: int
     process_area: int
+    centroid_mode: str
+    adaptive_block_size: int
+    adaptive_c: float
 
 
 def build_detection_context(background: np.ndarray, cfg: dict) -> DetectionContext:
@@ -61,6 +64,13 @@ def build_detection_context(background: np.ndarray, cfg: dict) -> DetectionConte
     otsu_offset = int(cfg.get("otsu_offset", 0))
     morph_open = int(cfg.get("morph_open", 3))
     morph_close = int(cfg.get("morph_close", 5))
+    centroid_mode = str(cfg.get("centroid_mode", "bbox")).lower()
+    adaptive_block_size = int(cfg.get("adaptive_block_size", 51))
+    if adaptive_block_size < 3:
+        adaptive_block_size = 3
+    if adaptive_block_size % 2 == 0:
+        adaptive_block_size += 1
+    adaptive_c = float(cfg.get("adaptive_c", -5.0))
     roi_x_min = float(cfg.get("roi_x_min", -1))
     roi_x_max = float(cfg.get("roi_x_max", -1))
     roi_y_min = float(cfg.get("roi_y_min", -1))
@@ -130,6 +140,9 @@ def build_detection_context(background: np.ndarray, cfg: dict) -> DetectionConte
         process_y0=process_y0,
         process_y1=process_y1,
         process_area=max(1, (process_x1 - process_x0) * (process_y1 - process_y0)),
+        centroid_mode=centroid_mode,
+        adaptive_block_size=adaptive_block_size,
+        adaptive_c=adaptive_c,
     )
 
 def _prepare_frame(
@@ -203,6 +216,18 @@ def _binary_cpu(
         otsu_thr, _ = cv2.threshold(diff, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         thr = max(1, min(255, int(otsu_thr + otsu_offset)))
         _, binary = cv2.threshold(diff, thr, 255, cv2.THRESH_BINARY)
+    elif threshold_mode == "adaptive":
+        # Umbral local: robusto frente a vignette IR y estelas tenues que un
+        # umbral global parte o pierde. El offset C negativo aumenta la
+        # sensibilidad (recupera blobs débiles para la 2ª fase del tracker).
+        binary = cv2.adaptiveThreshold(
+            diff,
+            255,
+            cv2.ADAPTIVE_THRESH_MEAN_C,
+            cv2.THRESH_BINARY,
+            ctx.adaptive_block_size,
+            ctx.adaptive_c,
+        )
     else:
         _, binary = cv2.threshold(diff, diff_threshold, 255, cv2.THRESH_BINARY, dst=ctx.diff_buf)
     if perf is not None:
@@ -331,6 +356,14 @@ def _extract_detections_from_binary(
         y += process_y0
         cx = float(x + w / 2.0)
         cy = float(y + h / 2.0)
+        if ctx.centroid_mode == "moments":
+            # El centroide por momentos sigue la masa real del blob; para
+            # estelas alargadas/curvas es mucho más estable que el centro del
+            # bounding box, lo que reduce saltos de centroide y ID-switches.
+            moments = cv2.moments(contour)
+            if moments["m00"] > 0:
+                cx = float(moments["m10"] / moments["m00"]) + process_x0
+                cy = float(moments["m01"] / moments["m00"]) + process_y0
         if valid_mask is not None:
             xi = int(round(cx))
             yi = int(round(cy))

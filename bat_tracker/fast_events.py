@@ -326,14 +326,19 @@ def _select_fast_track_ids(
     max_duration = float(cfg.get("max_source_duration_sec", 5.0))
     include_rejected = bool(cfg.get("include_rejected_candidates", True))
     include_accepted = bool(cfg.get("include_accepted_tracks", True))
+    require_entry_or_exit = bool(cfg.get("require_entry_or_exit", False))
+    allowed_directions = {"entry", "exit"}
 
     selected: list[int] = []
     for track_id, pts in by_track.items():
         assessment = assessment_by_track.get(track_id, {})
         accepted = str(assessment.get("accepted", "")).lower() == "true"
+        direction = str(assessment.get("direction", "")).strip().lower()
         if accepted and not include_accepted:
             continue
         if not accepted and not include_rejected:
+            continue
+        if require_entry_or_exit and direction not in allowed_directions:
             continue
         if len(pts) < min_track_points:
             continue
@@ -427,10 +432,14 @@ def _reconstruct_event_points(points: list[TrackPoint], cfg: dict) -> list[Track
 def _candidate_row_is_fast(row: dict, cfg: dict) -> bool:
     include_rejected = bool(cfg.get("include_rejected_candidates", True))
     include_accepted = bool(cfg.get("include_accepted_tracks", True))
+    require_entry_or_exit = bool(cfg.get("require_entry_or_exit", False))
     accepted = str(row.get("accepted", "")).lower() == "true"
+    direction = str(row.get("direction", "")).strip().lower()
     if accepted and not include_accepted:
         return False
     if not accepted and not include_rejected:
+        return False
+    if require_entry_or_exit and direction not in {"entry", "exit"}:
         return False
 
     duration = float(row.get("duration_sec", 0.0))

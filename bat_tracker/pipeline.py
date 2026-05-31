@@ -32,10 +32,12 @@ from .heatmap_events import reconstruct_heatmap_events
 from .heatmap_events import render_heatmap_events_overlay
 from .heatmap_events import write_heatmap_events_csv
 from .heatmap_events import write_heatmap_tracks_csv
+from .kalman_tracker import KalmanTracker
 from .kinetic_secondary import dedupe_secondary_track_points
 from .kinetic_secondary import run_kinetic_secondary_tracks
 from .perf import PerformanceCollector
 from .render import export_tracks_render_json, export_tracks_svg, render_detections_overlay, render_tracks_overlay
+from .track_quality import compute_track_quality
 from .track_smoothing import smooth_track_points
 from .tracker import GreedyTracker, TrackPoint
 from .trails import export_realtime_trails_video
@@ -85,6 +87,62 @@ def _valid_region_context_bounds(meta, valid_region_cfg: Dict, background_cfg: D
     duration_frames = max(1, int(round(duration_sec * fps)))
     end_frame = start_frame + duration_frames - 1
     return start_frame, end_frame
+
+
+def _compute_auto_vegetation_mask(
+    video_path: str,
+    meta,
+    *,
+    sample_frames: int = 220,
+    max_frame_for_sampling: int = 1250,
+    percentile: float = 85.0,
+    min_component_area: int = 24,
+) -> np.ndarray:
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video for vegetation mask estimation: {video_path}")
+    try:
+        n = max(1, int(meta.frame_count))
+        stop = min(n - 1, max_frame_for_sampling)
+        idxs = np.linspace(0, stop, max(20, sample_frames), dtype=int)
+        frames: List[np.ndarray] = []
+        for idx in idxs:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
+            ok, frame = cap.read()
+            if not ok or frame is None:
+                continue
+            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+        if len(frames) < 20:
+            return np.zeros((meta.height, meta.width), dtype=np.uint8)
+
+        stack = np.stack(frames, axis=0).astype(np.float32)
+        activity = np.mean(np.abs(np.diff(stack, axis=0)), axis=0)
+        tstd = np.std(stack, axis=0)
+        median = np.median(stack, axis=0).astype(np.uint8)
+        gx = cv2.Sobel(median, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(median, cv2.CV_32F, 0, 1, ksize=3)
+        grad = np.sqrt(gx * gx + gy * gy)
+
+        an = (activity - activity.min()) / (float(np.ptp(activity)) + 1e-6)
+        sn = (tstd - tstd.min()) / (float(np.ptp(tstd)) + 1e-6)
+        gn = (grad - grad.min()) / (float(np.ptp(grad)) + 1e-6)
+        score = 0.50 * an + 0.35 * sn + 0.15 * gn
+        thr = float(np.percentile(score, float(np.clip(percentile, 50.0, 99.5))))
+        mask = np.where(score >= thr, 255, 0).astype(np.uint8)
+
+        k3 = np.ones((3, 3), np.uint8)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k3, iterations=1)
+        mask = cv2.medianBlur(mask, 3)
+        num, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)
+        clean = np.zeros_like(mask)
+        for i in range(1, num):
+            area = int(stats[i, cv2.CC_STAT_AREA])
+            if area >= max(1, min_component_area):
+                clean[labels == i] = 255
+        mask = cv2.erode(clean, k3, iterations=1)
+        return mask
+    finally:
+        cap.release()
 
 
 CSV_COLUMNS = [
@@ -482,6 +540,8 @@ def _filter_track_points(
     tracking_cfg: Dict,
     fps: float,
     valid_mask: np.ndarray | None = None,
+    vegetation_mask: np.ndarray | None = None,
+    vegetation_cfg: Dict | None = None,
 ) -> tuple[List[TrackPoint], List[dict]]:
     def _ratio(value: float, threshold: float) -> float:
         if threshold <= 0.0:
@@ -496,8 +556,102 @@ def _filter_track_points(
     min_track_path_length = float(tracking_cfg.get("min_track_path_length", 0.0))
     min_track_straightness = float(tracking_cfg.get("min_track_straightness", 0.0))
     require_start_or_end_in_valid_region = bool(tracking_cfg.get("require_start_or_end_in_valid_region", False))
+    # En modo "annotate" la región válida solo etiqueta (in_valid_region,
+    # direction) y NO borra tracks; en modo "gate" sí descarta los que no
+    # tocan la gate. Para calidad de trayectorias, annotate es el defecto.
+    valid_region_mode = str(tracking_cfg.get("valid_region_mode", "annotate")).strip().lower()
+    gate_deletes = valid_region_mode == "gate"
     gate_mask = _build_valid_region_gate_mask(valid_mask, tracking_cfg)
     strong_short_score_min = 0.9
+    vegetation_cfg = vegetation_cfg or {}
+
+    frame_h, frame_w = (valid_mask.shape[:2] if valid_mask is not None else (0, 0))
+    if frame_h <= 0 or frame_w <= 0:
+        max_x = max((point.x for point in points), default=1.0)
+        max_y = max((point.y for point in points), default=1.0)
+        frame_w = int(max(2.0, max_x + 1.0))
+        frame_h = int(max(2.0, max_y + 1.0))
+    frame_diag = max(1.0, hypot(float(frame_w), float(frame_h)))
+
+    def _strip_vegetation_jitter(track_points: List[TrackPoint]) -> List[TrackPoint]:
+        if vegetation_mask is None or not bool(vegetation_cfg.get("enabled", False)):
+            return track_points
+        if len(track_points) < 3:
+            return track_points
+        drop_all_points_in_mask = bool(vegetation_cfg.get("drop_all_points_in_mask", False))
+
+        if drop_all_points_in_mask:
+            kept = []
+            for point in track_points:
+                xi, yi = int(round(point.x)), int(round(point.y))
+                inside = (
+                    0 <= yi < vegetation_mask.shape[0]
+                    and 0 <= xi < vegetation_mask.shape[1]
+                    and vegetation_mask[yi, xi] > 0
+                )
+                if not inside:
+                    kept.append(point)
+            # Strict mode: never keep points inside vegetation mask.
+            # Keep the longest contiguous remaining chunk to preserve valid motion.
+            if len(kept) < 2:
+                return kept
+            chunks: List[List[TrackPoint]] = []
+            chunk = [kept[0]]
+            for prev, curr in zip(kept[:-1], kept[1:]):
+                if curr.frame - prev.frame <= 1:
+                    chunk.append(curr)
+                else:
+                    chunks.append(chunk)
+                    chunk = [curr]
+            chunks.append(chunk)
+            best = max(chunks, key=len)
+            return best if len(best) >= 2 else kept
+
+        min_motion_ratio_per_sec = max(0.0, float(vegetation_cfg.get("min_motion_ratio_per_sec", 0.25)))
+        min_consecutive_points = max(2, int(vegetation_cfg.get("min_consecutive_points", 3)))
+        min_motion_px_per_sec = min_motion_ratio_per_sec * frame_diag
+
+        noisy = [False] * len(track_points)
+        for i, point in enumerate(track_points):
+            xi, yi = int(round(point.x)), int(round(point.y))
+            if yi < 0 or yi >= vegetation_mask.shape[0] or xi < 0 or xi >= vegetation_mask.shape[1]:
+                continue
+            if vegetation_mask[yi, xi] <= 0:
+                continue
+            p0 = track_points[max(0, i - 1)]
+            p1 = track_points[min(len(track_points) - 1, i + 1)]
+            dt = max(1e-6, p1.time_sec - p0.time_sec)
+            speed = hypot(p1.x - p0.x, p1.y - p0.y) / dt
+            if speed < min_motion_px_per_sec:
+                noisy[i] = True
+
+        kept = list(track_points)
+        run_start = None
+        for i, flag in enumerate(noisy + [False]):
+            if flag and run_start is None:
+                run_start = i
+            elif not flag and run_start is not None:
+                run_len = i - run_start
+                if run_len >= min_consecutive_points:
+                    for j in range(run_start, i):
+                        kept[j] = None  # type: ignore[index]
+                run_start = None
+
+        kept = [p for p in kept if p is not None]
+        if len(kept) < 2:
+            return track_points
+
+        chunks: List[List[TrackPoint]] = []
+        chunk = [kept[0]]
+        for prev, curr in zip(kept[:-1], kept[1:]):
+            if curr.frame - prev.frame <= 1:
+                chunk.append(curr)
+            else:
+                chunks.append(chunk)
+                chunk = [curr]
+        chunks.append(chunk)
+        best = max(chunks, key=len)
+        return best if len(best) >= 2 else track_points
 
     by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
     for point in points:
@@ -507,6 +661,41 @@ def _filter_track_points(
     assessments: List[dict] = []
     for track_points in by_track.values():
         track_points = sorted(track_points, key=lambda p: p.frame)
+        original_points = track_points
+        track_points = _strip_vegetation_jitter(track_points)
+        if len(track_points) < 2:
+            start = original_points[0]
+            end = original_points[-1]
+            duration = end.time_sec - start.time_sec
+            displacement = hypot(end.x - start.x, end.y - start.y)
+            path_length = _path_length(original_points)
+            straightness = (displacement / path_length) if path_length > 0 else 0.0
+            mean_speed = (path_length / duration) if duration > 0 else 0.0
+            avg_area = sum(p.area for p in original_points) / len(original_points)
+            assessments.append({
+                "video_id": start.video_id,
+                "track_id": start.track_id,
+                "accepted": False,
+                "reject_reasons": "vegetation_mask",
+                "score": 0.0,
+                "frame_start": start.frame,
+                "frame_end": end.frame,
+                "num_detections": len(original_points),
+                "duration_sec": round(duration, 4),
+                "x_start": round(start.x, 2),
+                "y_start": round(start.y, 2),
+                "x_end": round(end.x, 2),
+                "y_end": round(end.y, 2),
+                "displacement_px": round(displacement, 2),
+                "path_length_px": round(path_length, 2),
+                "straightness": round(straightness, 4),
+                "mean_speed_px_sec": round(mean_speed, 2),
+                "mean_area": round(avg_area, 2),
+                "start_in_valid_region": "",
+                "end_in_valid_region": "",
+                "direction": "unknown",
+            })
+            continue
         start = track_points[0]
         end = track_points[-1]
         duration = end.time_sec - start.time_sec
@@ -541,7 +730,7 @@ def _filter_track_points(
             s_in = _point_in_mask(start, gate_mask)
             e_in = _point_in_mask(end, gate_mask)
             direction = _classify_direction_full(s_in, e_in, track_points, valid_mask)
-            if not (s_in or e_in):
+            if gate_deletes and not (s_in or e_in):
                 reject_reasons.append("valid_region_gate")
         elif valid_mask is not None:
             s_in = _point_in_mask(start, valid_mask)
@@ -627,8 +816,22 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
     min_overlap_cos = float(tracking_cfg.get("merge_overlap_min_direction_cosine", 0.8))
     local_overlap_min_cos = max(0.65, min_overlap_cos - 0.15)
     proximity_override_dist = float(tracking_cfg.get("merge_overlap_proximity_override_distance", 0.0))
+    # Guardas anti-transitividad / anti-coexistencia:
+    # - max_group_overlap_frames: dos grupos no pueden fusionarse si comparten
+    #   demasiados frames (murcielagos distintos que vuelan en paralelo por el
+    #   mismo corredor), salvo que sean practicamente la misma deteccion.
+    # - duplicate_max_distance: umbral de "misma deteccion" que permite fusionar
+    #   pese al solape temporal (track duplicado real).
+    # - max_group_size: tope de tracks distintos por grupo fusionado.
+    max_group_overlap_frames = int(tracking_cfg.get("merge_max_group_overlap_frames", 6))
+    duplicate_max_distance = float(tracking_cfg.get("merge_duplicate_max_distance", 12.0))
+    max_group_size = int(tracking_cfg.get("merge_max_group_size", 0))
 
     parent: Dict[int, int] = {track_id: track_id for track_id in by_track}
+    group_frames: Dict[int, set] = {
+        track_id: {p.frame for p in pts} for track_id, pts in by_track.items()
+    }
+    group_members: Dict[int, set] = {track_id: {track_id} for track_id in by_track}
 
     def find(track_id: int) -> int:
         while parent[track_id] != track_id:
@@ -636,15 +839,16 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
             track_id = parent[track_id]
         return track_id
 
-    def union(a: int, b: int) -> None:
+    def union(a: int, b: int) -> int:
         ra = find(a)
         rb = find(b)
         if ra == rb:
-            return
-        if ra < rb:
-            parent[rb] = ra
-        else:
-            parent[ra] = rb
+            return ra
+        keep, drop = (ra, rb) if ra < rb else (rb, ra)
+        parent[drop] = keep
+        group_frames[keep] |= group_frames[drop]
+        group_members[keep] |= group_members[drop]
+        return keep
 
     merges_applied: List[Dict] = []
     track_ids = sorted(by_track.keys())
@@ -792,8 +996,29 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
         rb = find(track_b_id)
         if ra == rb:
             continue
+
+        # Guarda anti-coexistencia: no fusionar grupos que ya comparten muchos
+        # frames (vuelos paralelos distintos), salvo que sea practicamente la
+        # misma deteccion (track duplicado real, distancia media minima).
+        shared_frames = len(group_frames[ra] & group_frames[rb])
+        mean_distance_val = reason_data.get("mean_distance")
+        is_duplicate = (
+            mean_distance_val is not None
+            and float(mean_distance_val) <= duplicate_max_distance
+        )
+        if (
+            max_group_overlap_frames >= 0
+            and shared_frames > max_group_overlap_frames
+            and not is_duplicate
+        ):
+            continue
+
+        # Guarda anti-transitividad: tope de tracks distintos por grupo.
+        if max_group_size > 0 and len(group_members[ra] | group_members[rb]) > max_group_size:
+            continue
+
         union(track_a_id, track_b_id)
-        merged_to = min(find(track_a_id), find(track_b_id))
+        merged_to = find(track_a_id)
         merges_applied.append(
             {
                 "track_a": track_a_id,
@@ -930,6 +1155,29 @@ def _export_track_clips(
     return clip_paths
 
 
+def _build_tracker(tracking_cfg: Dict, fps: float, video_id: str):
+    """Construye el tracker según ``tracking.tracker`` (kalman|greedy)."""
+    kind = str(tracking_cfg.get("tracker", "kalman")).strip().lower()
+    max_distance = float(tracking_cfg["max_distance"])
+    max_missed = int(tracking_cfg["max_missed"])
+    if kind == "greedy":
+        return GreedyTracker(
+            max_distance=max_distance,
+            max_missed=max_missed,
+            fps=fps,
+            video_id=video_id,
+        )
+    return KalmanTracker(
+        max_distance=max_distance,
+        max_missed=max_missed,
+        fps=fps,
+        video_id=video_id,
+        sigma_acc=float(tracking_cfg.get("kalman_sigma_acc", 3.0)),
+        measurement_std=float(tracking_cfg.get("kalman_measurement_std", 2.0)),
+        high_area_threshold=float(tracking_cfg.get("kalman_high_area_threshold", 0.0)),
+    )
+
+
 def run_pipeline(input_video: str, output_dir: str, config_path: str | None = None) -> Dict:
     pipeline_started = perf_counter()
     cfg = load_config(config_path)
@@ -1012,8 +1260,13 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     valid_mask: np.ndarray | None = None
     valid_mask_for_detection: np.ndarray | None = None
     valid_gate_mask: np.ndarray | None = None
+    vegetation_mask: np.ndarray | None = None
     valid_region_meta: Dict = {"enabled": False}
     valid_region_outputs: Dict[str, str] = {}
+    vegetation_outputs: Dict[str, str] = {
+        "vegetation_mask_png": "",
+        "vegetation_mask_overlay_video": "",
+    }
 
     if valid_region_enabled:
         progress.start_stage("valid_region")
@@ -1079,12 +1332,66 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         }
         progress.complete_stage("valid_region", detail="valid region ready")
 
-    tracker = GreedyTracker(
-        max_distance=float(cfg["tracking"]["max_distance"]),
-        max_missed=int(cfg["tracking"]["max_missed"]),
-        fps=meta.fps,
-        video_id=meta.video_id,
-    )
+    vegetation_cfg = cfg.get("vegetation_noise", {})
+    if bool(vegetation_cfg.get("enabled", False)):
+        vegetation_mask_input = str(vegetation_cfg.get("input_mask", "")).strip()
+        if vegetation_mask_input:
+            vegetation_mask = load_valid_region_mask(vegetation_mask_input)
+            if vegetation_mask.shape[:2] != background.shape[:2]:
+                raise ValueError(
+                    "vegetation_noise.input_mask shape does not match the processing frame size: "
+                    f"expected {background.shape[:2]}, got {vegetation_mask.shape[:2]}"
+                )
+            dilate_px = max(0, int(vegetation_cfg.get("mask_dilate_px", 0)))
+            if dilate_px > 0:
+                k = 2 * dilate_px + 1
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+                vegetation_mask = cv2.dilate(vegetation_mask, kernel, iterations=1)
+        else:
+            vegetation_mask = _compute_auto_vegetation_mask(
+                input_video,
+                meta,
+                sample_frames=int(vegetation_cfg.get("auto_sample_frames", 220)),
+                max_frame_for_sampling=int(vegetation_cfg.get("auto_max_frame_for_sampling", 1250)),
+                percentile=float(vegetation_cfg.get("auto_percentile", 85.0)),
+                min_component_area=int(vegetation_cfg.get("auto_min_component_area", 24)),
+            )
+            dilate_px = max(0, int(vegetation_cfg.get("mask_dilate_px", 0)))
+            if dilate_px > 0:
+                k = 2 * dilate_px + 1
+                kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+                vegetation_mask = cv2.dilate(vegetation_mask, kernel, iterations=1)
+            mask_path = out_dir / "vegetation_mask.png"
+            cv2.imwrite(str(mask_path), vegetation_mask)
+
+            # Export a quick overlay video for visual validation.
+            cap = cv2.VideoCapture(input_video)
+            overlay_video_path = out_dir / "vegetation_mask_overlay.mp4"
+            writer = cv2.VideoWriter(
+                str(overlay_video_path),
+                cv2.VideoWriter_fourcc(*"mp4v"),
+                float(meta.fps),
+                (int(meta.width), int(meta.height)),
+            )
+            contours, _ = cv2.findContours((vegetation_mask > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            while True:
+                ok, frame = cap.read()
+                if not ok or frame is None:
+                    break
+                tint = np.zeros_like(frame)
+                tint[vegetation_mask > 0] = (0, 255, 120)
+                ov = cv2.addWeighted(frame, 1.0, tint, 0.38, 0)
+                cv2.drawContours(ov, contours, -1, (0, 255, 255), 1, cv2.LINE_AA)
+                cv2.putText(ov, "vegetation mask (auto)", (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+                writer.write(ov)
+            cap.release()
+            writer.release()
+            vegetation_outputs = {
+                "vegetation_mask_png": str(mask_path.resolve()),
+                "vegetation_mask_overlay_video": str(overlay_video_path.resolve()),
+            }
+
+    tracker = _build_tracker(cfg["tracking"], fps=meta.fps, video_id=meta.video_id)
     burst_gate = TemporalBurstGate.from_detection_cfg(cfg["detection"])
     detection_context = build_detection_context(background, cfg["detection"])
     secondary_detection_runtime_stats: Dict[str, int] = {
@@ -1184,6 +1491,8 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         cfg["tracking"],
         meta.fps,
         valid_mask=valid_mask,
+        vegetation_mask=vegetation_mask,
+        vegetation_cfg=vegetation_cfg,
     )
     secondary_kinetic_points: List[TrackPoint] = []
     secondary_kinetic_added_points: List[TrackPoint] = []
@@ -1582,6 +1891,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             **heatmap_event_outputs,
             "track_clips": track_clip_outputs,
             **valid_region_outputs,
+            **vegetation_outputs,
         },
         "postprocess": {
             "auto_merge_enabled": bool(cfg["tracking"].get("auto_merge_suggested", False)),
@@ -1618,6 +1928,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "source_track_points": len(smoothed_points) if smoothed_points is not None else len(filtered_points),
             "output_video": flight_trails_output,
         },
+        "track_quality": compute_track_quality(
+            filtered_points,
+            fps=meta.fps,
+            merges_applied=merges_applied,
+        ),
     }
 
     meta_path = out_dir / "meta.json"
