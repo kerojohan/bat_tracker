@@ -68,7 +68,7 @@ valid_region:
   apply_to_detection: false
   hybrid_combine_mode: and
   input_image: ''
-  input_mask: /tmp/bt_compare/cave_mask_from_image/mask.png
+  input_mask: ''
   context_start_sec: 0.0
   context_duration_sec: 75.0
   blur_kernel_size: 151
@@ -127,7 +127,7 @@ output:
   trajectory_smoothing_enabled: false
   trajectory_smoothing_window: 5
 flight_trails:
-  enabled: false
+  enabled: true
   video_filename: flight_trails_overlay.mp4
   history_frames: 12
   max_track_gap_frames: 2
