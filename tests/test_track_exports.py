@@ -410,6 +410,35 @@ def test_auto_merge_uses_local_overlap_continuity_for_short_shared_window() -> N
     assert {point.track_id for point in merged_points} == {202}
 
 
+def test_auto_merge_uses_single_frame_overlap_for_continuation() -> None:
+    points = [
+        _make_track_point(210, 100, 100.0, 300.0),
+        _make_track_point(210, 101, 120.0, 285.0),
+        _make_track_point(210, 102, 140.0, 270.0),
+        _make_track_point(210, 103, 160.0, 255.0),
+        _make_track_point(211, 103, 161.5, 254.0),
+        _make_track_point(211, 104, 181.5, 239.0),
+        _make_track_point(211, 105, 201.5, 224.0),
+        _make_track_point(211, 106, 221.5, 209.0),
+    ]
+    cfg = {
+        "auto_merge_suggested": True,
+        "merge_max_gap_frames": 8,
+        "merge_max_endpoint_distance": 80.0,
+        "merge_overlap_min_common_frames": 3,
+        "merge_overlap_max_mean_distance": 60.0,
+        "merge_overlap_min_direction_cosine": 0.8,
+    }
+
+    merged_points, merges = _auto_merge_track_points(points, cfg)
+
+    assert any(
+        merge["track_a"] == 210 and merge["track_b"] == 211 and merge["reason"] == "overlap_local"
+        for merge in merges
+    )
+    assert {point.track_id for point in merged_points} == {210}
+
+
 def test_auto_merge_uses_connector_direction_for_overlapping_fragments() -> None:
     points = [
         _make_track_point(180, 13432, 708.0, 667.0),

@@ -50,7 +50,7 @@ tracking:
   require_start_or_end_in_valid_region: true
   valid_region_mode: gate
   valid_region_gate_dilate_px: 0
-  auto_merge_suggested: false
+  auto_merge_suggested: true
   merge_max_gap_frames: 12
   merge_max_endpoint_distance: 100.0
   merge_overlap_min_common_frames: 3
