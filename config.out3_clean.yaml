@@ -59,6 +59,9 @@ tracking:
   merge_max_group_overlap_frames: 6
   merge_duplicate_max_distance: 12.0
   merge_max_group_size: 6
+  dedupe_coexisting_tracks: true
+  dedupe_coexisting_reference_width: 1024
+  dedupe_coexisting_reference_height: 576
   export_track_candidates: true
 fast_events:
   require_entry_or_exit: true

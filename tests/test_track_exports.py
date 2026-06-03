@@ -9,7 +9,12 @@ import cv2
 import numpy as np
 import yaml
 
-from bat_tracker.pipeline import _auto_merge_track_points, _filter_points_start_or_end_in_mask, run_pipeline
+from bat_tracker.pipeline import (
+    _auto_merge_track_points,
+    _dedupe_coexisting_track_points,
+    _filter_points_start_or_end_in_mask,
+    run_pipeline,
+)
 from bat_tracker.render import export_tracks_render_json, export_tracks_svg
 from bat_tracker.tracker import TrackPoint
 from bat_tracker.trails import RealTimeTrailRenderer
@@ -468,3 +473,50 @@ def test_auto_merge_keeps_nearby_tracks_separate_when_connector_direction_breaks
 
     assert merges == []
     assert {point.track_id for point in merged_points} == {86, 90}
+
+
+def test_dedupe_coexisting_tracks_removes_short_embedded_duplicate() -> None:
+    points = []
+    for frame in range(10):
+        points.append(_make_track_point(1, frame, 100.0 + frame * 20.0, 400.0 - frame * 15.0))
+    for frame in range(3, 7):
+        points.append(_make_track_point(2, frame, 102.0 + frame * 20.0, 402.0 - frame * 15.0))
+    for frame in range(10):
+        points.append(_make_track_point(3, frame, 100.0 + frame * 20.0, 520.0 - frame * 15.0))
+
+    deduped, duplicate_ids = _dedupe_coexisting_track_points(
+        points,
+        {"dedupe_coexisting_tracks": True},
+    )
+
+    assert duplicate_ids == [2]
+    assert {point.track_id for point in deduped} == {1, 3}
+
+
+def test_dedupe_coexisting_tracks_scales_distance_with_resolution() -> None:
+    points = []
+    for frame in range(10):
+        points.append(_make_track_point(1, frame, 200.0 + frame * 40.0, 800.0 - frame * 30.0))
+    for frame in range(3, 7):
+        points.append(_make_track_point(2, frame, 204.0 + frame * 40.0, 804.0 - frame * 30.0))
+
+    cfg = {
+        "dedupe_coexisting_tracks": True,
+        "dedupe_coexisting_max_mean_distance": 3.0,
+        "dedupe_coexisting_reference_width": 1024,
+        "dedupe_coexisting_reference_height": 576,
+    }
+
+    _, duplicate_ids_without_scaling = _dedupe_coexisting_track_points(
+        points,
+        {**cfg, "auto_scale_with_resolution": False},
+        frame_size=(2048, 1152),
+    )
+    _, duplicate_ids_with_scaling = _dedupe_coexisting_track_points(
+        points,
+        cfg,
+        frame_size=(2048, 1152),
+    )
+
+    assert duplicate_ids_without_scaling == []
+    assert duplicate_ids_with_scaling == [2]

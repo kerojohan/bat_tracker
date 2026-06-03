@@ -1116,6 +1116,119 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
     return consolidated, merges_applied
 
 
+def _scale_linear_px_for_resolution(
+    value_px: float,
+    cfg: Dict,
+    frame_size: tuple[int, int] | None,
+    *,
+    reference_width_key: str,
+    reference_height_key: str,
+) -> float:
+    if frame_size is None or not bool(cfg.get("auto_scale_with_resolution", True)):
+        return float(value_px)
+
+    width, height = frame_size
+    ref_w = max(1, int(cfg.get(reference_width_key, 1024)))
+    ref_h = max(1, int(cfg.get(reference_height_key, 576)))
+    target_w = max(1, int(width))
+    target_h = max(1, int(height))
+    ref_diag = max(1.0, hypot(float(ref_w), float(ref_h)))
+    target_diag = max(1.0, hypot(float(target_w), float(target_h)))
+    return float(value_px) * target_diag / ref_diag
+
+
+def _dedupe_coexisting_track_points(
+    points: List[TrackPoint],
+    tracking_cfg: Dict,
+    frame_size: tuple[int, int] | None = None,
+) -> tuple[List[TrackPoint], List[int]]:
+    if not bool(tracking_cfg.get("dedupe_coexisting_tracks", False)):
+        return points, []
+
+    min_common_frames = int(tracking_cfg.get("dedupe_coexisting_min_common_frames", 3))
+    max_mean_distance = _scale_linear_px_for_resolution(
+        float(tracking_cfg.get("dedupe_coexisting_max_mean_distance", 45.0)),
+        tracking_cfg,
+        frame_size,
+        reference_width_key="dedupe_coexisting_reference_width",
+        reference_height_key="dedupe_coexisting_reference_height",
+    )
+    min_overlap_ratio = float(tracking_cfg.get("dedupe_coexisting_min_overlap_ratio", 0.8))
+    max_short_track_length = int(tracking_cfg.get("dedupe_coexisting_max_short_track_length", 8))
+    max_short_to_long_ratio = float(tracking_cfg.get("dedupe_coexisting_max_short_to_long_ratio", 0.7))
+    min_direction_cosine = float(tracking_cfg.get("dedupe_coexisting_min_direction_cosine", 0.70))
+
+    by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
+    for point in points:
+        by_track[int(point.track_id)].append(point)
+    for track_id in by_track:
+        by_track[track_id].sort(key=lambda point: point.frame)
+
+    duplicate_track_ids: set[int] = set()
+    track_ids = sorted(by_track)
+    frame_maps = {
+        track_id: {point.frame: point for point in track_points}
+        for track_id, track_points in by_track.items()
+    }
+
+    for i, track_a_id in enumerate(track_ids):
+        if track_a_id in duplicate_track_ids:
+            continue
+        track_a = by_track[track_a_id]
+        for track_b_id in track_ids[i + 1:]:
+            if track_b_id in duplicate_track_ids:
+                continue
+            track_b = by_track[track_b_id]
+            shorter_id, shorter = (
+                (track_a_id, track_a)
+                if len(track_a) <= len(track_b)
+                else (track_b_id, track_b)
+            )
+            longer = track_b if shorter_id == track_a_id else track_a
+            if len(shorter) > max_short_track_length:
+                continue
+            if shorter[0].frame < longer[0].frame or shorter[-1].frame > longer[-1].frame:
+                continue
+            if len(shorter) / max(1, len(longer)) > max_short_to_long_ratio:
+                continue
+
+            common_frames = sorted(set(frame_maps[track_a_id]).intersection(frame_maps[track_b_id]))
+            if len(common_frames) < min_common_frames:
+                continue
+            overlap_ratio = len(common_frames) / max(1, len(shorter))
+            if overlap_ratio < min_overlap_ratio:
+                continue
+
+            distances = [
+                hypot(
+                    frame_maps[track_a_id][frame].x - frame_maps[track_b_id][frame].x,
+                    frame_maps[track_a_id][frame].y - frame_maps[track_b_id][frame].y,
+                )
+                for frame in common_frames
+            ]
+            mean_distance = sum(distances) / len(distances)
+            if mean_distance > max_mean_distance:
+                continue
+
+            vec_a = (track_a[-1].x - track_a[0].x, track_a[-1].y - track_a[0].y)
+            vec_b = (track_b[-1].x - track_b[0].x, track_b[-1].y - track_b[0].y)
+            direction_cosine = _vector_cosine(vec_a, vec_b)
+            if direction_cosine is not None and direction_cosine < min_direction_cosine:
+                continue
+
+            duplicate_track_ids.add(shorter_id)
+
+    if not duplicate_track_ids:
+        return points, []
+
+    deduped = [
+        point
+        for point in points
+        if int(point.track_id) not in duplicate_track_ids
+    ]
+    return sorted(deduped, key=lambda point: (point.track_id, point.frame)), sorted(duplicate_track_ids)
+
+
 def _export_track_clips(
     input_video: str,
     output_dir: Path,
@@ -1528,6 +1641,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         vegetation_mask=vegetation_mask,
         vegetation_cfg=vegetation_cfg,
     )
+    filtered_points, coexisting_duplicate_track_ids = _dedupe_coexisting_track_points(
+        filtered_points,
+        cfg["tracking"],
+        frame_size=(meta.width, meta.height),
+    )
     secondary_kinetic_points: List[TrackPoint] = []
     secondary_kinetic_added_points: List[TrackPoint] = []
     secondary_kinetic_meta: Dict = {"enabled": secondary_kinetic_enabled}
@@ -1883,6 +2001,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             **_build_metrics(filtered_points, frame_processed),
             "frames_suppressed_temporal_burst": suppressed_burst_frames,
             "tracks_merged_auto": len(merges_applied),
+            "tracks_deduped_coexisting": len(coexisting_duplicate_track_ids),
             "secondary_detection_primary_detections": secondary_primary_total,
             "secondary_detection_raw_detections": secondary_raw_total,
             "secondary_detection_added_detections": secondary_added_total,
