@@ -1229,6 +1229,159 @@ def _dedupe_coexisting_track_points(
     return sorted(deduped, key=lambda point: (point.track_id, point.frame)), sorted(duplicate_track_ids)
 
 
+def _rescue_crossing_continuation_points(
+    source_points: List[TrackPoint],
+    accepted_points: List[TrackPoint],
+    assessments: List[dict],
+    tracking_cfg: Dict,
+    frame_size: tuple[int, int] | None = None,
+) -> tuple[List[TrackPoint], List[Dict]]:
+    if not bool(tracking_cfg.get("rescue_crossing_continuations", False)):
+        return accepted_points, []
+
+    accepted_track_ids = {int(point.track_id) for point in accepted_points}
+    if not accepted_track_ids:
+        return accepted_points, []
+
+    rescue_reject_reasons = {
+        reason.strip()
+        for reason in str(tracking_cfg.get("rescue_crossing_reject_reasons", "valid_region_gate")).split(";")
+        if reason.strip()
+    }
+    max_gap_frames = int(tracking_cfg.get("rescue_crossing_max_gap_frames", 2))
+    max_start_distance = _scale_linear_px_for_resolution(
+        float(tracking_cfg.get("rescue_crossing_max_start_distance", 70.0)),
+        tracking_cfg,
+        frame_size,
+        reference_width_key="rescue_crossing_reference_width",
+        reference_height_key="rescue_crossing_reference_height",
+    )
+    min_fragment_points = int(tracking_cfg.get("rescue_crossing_min_fragment_points", 4))
+    min_new_points = int(tracking_cfg.get("rescue_crossing_min_new_points", 3))
+    min_overlap_distance_from_other_tracks = _scale_linear_px_for_resolution(
+        float(tracking_cfg.get("rescue_crossing_min_distance_from_other_tracks", 45.0)),
+        tracking_cfg,
+        frame_size,
+        reference_width_key="rescue_crossing_reference_width",
+        reference_height_key="rescue_crossing_reference_height",
+    )
+
+    source_by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
+    for point in source_points:
+        source_by_track[int(point.track_id)].append(point)
+    for track_id in source_by_track:
+        source_by_track[track_id].sort(key=lambda point: point.frame)
+
+    accepted_by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
+    for point in accepted_points:
+        accepted_by_track[int(point.track_id)].append(point)
+    for track_id in accepted_by_track:
+        accepted_by_track[track_id].sort(key=lambda point: point.frame)
+
+    rejected_track_ids: set[int] = set()
+    for assessment in assessments:
+        if bool(assessment.get("accepted")):
+            continue
+        track_id = int(assessment.get("track_id"))
+        if track_id in accepted_track_ids:
+            continue
+        reasons = {
+            reason.strip()
+            for reason in str(assessment.get("reject_reasons", "")).split(";")
+            if reason.strip()
+        }
+        if reasons and reasons.issubset(rescue_reject_reasons):
+            rejected_track_ids.add(track_id)
+
+    if not rejected_track_ids:
+        return accepted_points, []
+
+    accepted_frame_maps = {
+        track_id: {point.frame: point for point in track_points}
+        for track_id, track_points in accepted_by_track.items()
+    }
+    rescue_candidates: list[tuple[float, int, int, List[TrackPoint], float, int]] = []
+
+    for accepted_track_id, accepted_track in accepted_by_track.items():
+        accepted_end = accepted_track[-1]
+        for rejected_track_id in sorted(rejected_track_ids):
+            fragment = source_by_track.get(rejected_track_id, [])
+            if len(fragment) < min_fragment_points:
+                continue
+            gap = fragment[0].frame - accepted_end.frame
+            if gap < -1 or gap > max_gap_frames:
+                continue
+            start_distance = hypot(fragment[0].x - accepted_end.x, fragment[0].y - accepted_end.y)
+            if start_distance > max_start_distance:
+                continue
+
+            new_points = [point for point in fragment if point.frame > accepted_end.frame]
+            if len(new_points) < min_new_points:
+                continue
+
+            too_close_to_other_track = False
+            for other_track_id, frame_map in accepted_frame_maps.items():
+                if other_track_id == accepted_track_id:
+                    continue
+                distances = []
+                for point in new_points:
+                    other = frame_map.get(point.frame)
+                    if other is not None:
+                        distances.append(hypot(point.x - other.x, point.y - other.y))
+                if distances and sum(distances) / len(distances) <= min_overlap_distance_from_other_tracks:
+                    too_close_to_other_track = True
+                    break
+            if too_close_to_other_track:
+                continue
+
+            score = start_distance + max(0, gap) * max_start_distance - 2.0 * len(new_points)
+            rescue_candidates.append(
+                (score, accepted_track_id, rejected_track_id, new_points, start_distance, gap)
+            )
+
+    rescued_points = list(accepted_points)
+    rescues: List[Dict] = []
+    used_rejected_track_ids: set[int] = set()
+    used_accepted_track_ids: set[int] = set()
+    for score, accepted_track_id, rejected_track_id, new_points, start_distance, gap in sorted(rescue_candidates):
+        if accepted_track_id in used_accepted_track_ids or rejected_track_id in used_rejected_track_ids:
+            continue
+        used_accepted_track_ids.add(accepted_track_id)
+        used_rejected_track_ids.add(rejected_track_id)
+        for point in new_points:
+            rescued_points.append(
+                TrackPoint(
+                    video_id=point.video_id,
+                    track_id=accepted_track_id,
+                    frame=point.frame,
+                    time_sec=point.time_sec,
+                    x=point.x,
+                    y=point.y,
+                    vx=point.vx,
+                    vy=point.vy,
+                    bbox_x1=point.bbox_x1,
+                    bbox_y1=point.bbox_y1,
+                    bbox_x2=point.bbox_x2,
+                    bbox_y2=point.bbox_y2,
+                    area=point.area,
+                )
+            )
+        rescues.append(
+            {
+                "track_id": accepted_track_id,
+                "source_track_id": rejected_track_id,
+                "points_added": len(new_points),
+                "gap_frames": int(gap),
+                "start_distance": round(float(start_distance), 3),
+                "score": round(float(score), 3),
+            }
+        )
+
+    if not rescues:
+        return accepted_points, []
+    return sorted(rescued_points, key=lambda point: (point.track_id, point.frame)), rescues
+
+
 def _export_track_clips(
     input_video: str,
     output_dir: Path,
@@ -1641,6 +1794,13 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         vegetation_mask=vegetation_mask,
         vegetation_cfg=vegetation_cfg,
     )
+    filtered_points, crossing_continuation_rescues = _rescue_crossing_continuation_points(
+        merged_points,
+        filtered_points,
+        track_assessments,
+        cfg["tracking"],
+        frame_size=(meta.width, meta.height),
+    )
     filtered_points, coexisting_duplicate_track_ids = _dedupe_coexisting_track_points(
         filtered_points,
         cfg["tracking"],
@@ -2001,6 +2161,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             **_build_metrics(filtered_points, frame_processed),
             "frames_suppressed_temporal_burst": suppressed_burst_frames,
             "tracks_merged_auto": len(merges_applied),
+            "tracks_rescued_crossing_continuations": len(crossing_continuation_rescues),
             "tracks_deduped_coexisting": len(coexisting_duplicate_track_ids),
             "secondary_detection_primary_detections": secondary_primary_total,
             "secondary_detection_raw_detections": secondary_raw_total,
@@ -2049,6 +2210,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         "postprocess": {
             "auto_merge_enabled": bool(cfg["tracking"].get("auto_merge_suggested", False)),
             "auto_merges_applied": merges_applied,
+            "crossing_continuation_rescues": crossing_continuation_rescues,
             "track_candidates_total": len(track_assessments),
             "track_candidates_kept": sum(1 for row in track_assessments if row["accepted"]),
             "track_candidates_rejected": sum(1 for row in track_assessments if not row["accepted"]),

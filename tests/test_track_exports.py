@@ -13,6 +13,7 @@ from bat_tracker.pipeline import (
     _auto_merge_track_points,
     _dedupe_coexisting_track_points,
     _filter_points_start_or_end_in_mask,
+    _rescue_crossing_continuation_points,
     run_pipeline,
 )
 from bat_tracker.render import export_tracks_render_json, export_tracks_svg
@@ -520,3 +521,39 @@ def test_dedupe_coexisting_tracks_scales_distance_with_resolution() -> None:
 
     assert duplicate_ids_without_scaling == []
     assert duplicate_ids_with_scaling == [2]
+
+
+def test_rescue_crossing_continuation_extends_accepted_track() -> None:
+    accepted = [_make_track_point(10, frame, 100.0 + frame * 10.0, 200.0) for frame in range(5)]
+    fragment = [_make_track_point(20, frame, 144.0 + (frame - 4) * 9.0, 202.0) for frame in range(4, 9)]
+    crossing = [_make_track_point(30, frame, 280.0 + frame * 8.0, 120.0) for frame in range(4, 9)]
+    assessments = [
+        {"track_id": 10, "accepted": True, "reject_reasons": ""},
+        {"track_id": 20, "accepted": False, "reject_reasons": "valid_region_gate"},
+        {"track_id": 30, "accepted": True, "reject_reasons": ""},
+    ]
+
+    rescued, rescues = _rescue_crossing_continuation_points(
+        [*accepted, *fragment, *crossing],
+        [*accepted, *crossing],
+        assessments,
+        {"rescue_crossing_continuations": True},
+        frame_size=(1024, 576),
+    )
+
+    by_track = {}
+    for point in rescued:
+        by_track.setdefault(point.track_id, []).append(point)
+
+    assert rescues == [
+        {
+            "track_id": 10,
+            "source_track_id": 20,
+            "points_added": 4,
+            "gap_frames": 0,
+            "start_distance": 4.472,
+            "score": -3.528,
+        }
+    ]
+    assert [point.frame for point in by_track[10]] == list(range(9))
+    assert [point.frame for point in by_track[30]] == list(range(4, 9))

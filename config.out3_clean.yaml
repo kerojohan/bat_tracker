@@ -62,6 +62,9 @@ tracking:
   dedupe_coexisting_tracks: true
   dedupe_coexisting_reference_width: 1024
   dedupe_coexisting_reference_height: 576
+  rescue_crossing_continuations: true
+  rescue_crossing_reference_width: 1024
+  rescue_crossing_reference_height: 576
   export_track_candidates: true
 fast_events:
   require_entry_or_exit: true
