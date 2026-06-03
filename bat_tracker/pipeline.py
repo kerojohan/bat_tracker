@@ -1185,11 +1185,19 @@ def _dedupe_coexisting_track_points(
                 else (track_b_id, track_b)
             )
             longer = track_b if shorter_id == track_a_id else track_a
+            same_start = abs(track_a[0].frame - track_b[0].frame) <= 1
+            same_end = abs(track_a[-1].frame - track_b[-1].frame) <= 1
             if len(shorter) > max_short_track_length:
                 continue
             if shorter[0].frame < longer[0].frame or shorter[-1].frame > longer[-1].frame:
                 continue
-            if len(shorter) / max(1, len(longer)) > max_short_to_long_ratio:
+            # When two tracks start or end together, the old short-to-long
+            # ratio rejected real duplicate splits like 4 vs 3 points. In that
+            # case the spatial and directional evidence is already strong, so
+            # the temporal containment check is enough and the ratio would be
+            # too strict. Keep the ratio for the more ambiguous embedded
+            # fragments that do not align on an edge.
+            if not same_start and not same_end and len(shorter) / max(1, len(longer)) > max_short_to_long_ratio:
                 continue
 
             common_frames = sorted(set(frame_maps[track_a_id]).intersection(frame_maps[track_b_id]))

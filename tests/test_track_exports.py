@@ -494,6 +494,22 @@ def test_dedupe_coexisting_tracks_removes_short_embedded_duplicate() -> None:
     assert {point.track_id for point in deduped} == {1, 3}
 
 
+def test_dedupe_coexisting_tracks_removes_same_start_duplicate_even_if_lengths_are_close() -> None:
+    points = []
+    for frame in range(4):
+        points.append(_make_track_point(1, frame, 200.0 + frame * 18.0, 320.0 - frame * 11.0))
+    for frame in range(3):
+        points.append(_make_track_point(2, frame, 202.0 + frame * 18.0, 322.0 - frame * 11.0))
+
+    deduped, duplicate_ids = _dedupe_coexisting_track_points(
+        points,
+        {"dedupe_coexisting_tracks": True},
+    )
+
+    assert duplicate_ids == [2]
+    assert {point.track_id for point in deduped} == {1}
+
+
 def test_dedupe_coexisting_tracks_scales_distance_with_resolution() -> None:
     points = []
     for frame in range(10):
