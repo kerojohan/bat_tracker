@@ -76,6 +76,21 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "merge_max_group_overlap_frames": 6,
         "merge_duplicate_max_distance": 12.0,
         "merge_max_group_size": 6,
+        "enable_track_deduplication": False,
+        "max_spatial_distance_px": 16.0,
+        "max_temporal_gap_frames": 8,
+        "min_direction_similarity": 0.75,
+        "min_speed_similarity": 0.50,
+        "min_duplicate_score": 0.75,
+        "merge_strategy": "mark",
+        "rescue_motion_candidates": False,
+        "rescue_motion_reject_reasons": "valid_region_gate;vegetation_mask",
+        "rescue_motion_min_points": 3,
+        "rescue_motion_min_displacement": 18.0,
+        "rescue_motion_min_path_length": 24.0,
+        "rescue_motion_min_mean_speed": 120.0,
+        "rescue_motion_min_straightness": 0.0,
+        "rescue_motion_interaction_dilate_px": 0,
         "export_track_candidates": False,
     },
     "fast_events": {
@@ -306,6 +321,27 @@ def _validate_config(cfg: Dict[str, Any]) -> None:
     if valid_region_mode not in {"gate", "annotate"}:
         raise ValueError(
             f"tracking.valid_region_mode must be one of gate/annotate, got: {valid_region_mode}"
+        )
+    merge_strategy = str(tracking.get("merge_strategy", "mark")).strip().lower()
+    if merge_strategy not in {"mark", "discard", "merge", "auto"}:
+        raise ValueError(
+            f"tracking.merge_strategy must be one of mark/discard/merge/auto, got: {merge_strategy}"
+        )
+    for field in (
+        "max_spatial_distance_px",
+        "min_direction_similarity",
+        "min_speed_similarity",
+        "min_duplicate_score",
+    ):
+        value = float(tracking.get(field, 0.0))
+        if field.startswith("min_") and (value < 0.0 or value > 1.0):
+            raise ValueError(f"tracking.{field} must be between 0 and 1, got: {value}")
+        if field == "max_spatial_distance_px" and value <= 0.0:
+            raise ValueError(f"tracking.{field} must be > 0, got: {value}")
+    max_temporal_gap_frames = int(tracking.get("max_temporal_gap_frames", 0))
+    if max_temporal_gap_frames < 0:
+        raise ValueError(
+            f"tracking.max_temporal_gap_frames must be >= 0, got: {max_temporal_gap_frames}"
         )
 
     valid_region = cfg.get("valid_region", {})

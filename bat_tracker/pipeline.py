@@ -38,6 +38,10 @@ from .kinetic_secondary import run_kinetic_secondary_tracks
 from .perf import PerformanceCollector
 from .render import export_tracks_render_json, export_tracks_svg, render_detections_overlay, render_tracks_overlay
 from .track_quality import compute_track_quality
+from .track_deduplication import deduplicate_track_points
+from .track_deduplication import render_track_deduplication_overlay
+from .track_deduplication import write_track_deduplication_csv
+from .track_deduplication import write_track_deduplication_json
 from .track_smoothing import smooth_track_points
 from .tracker import GreedyTracker, TrackPoint
 from .trails import export_realtime_trails_video
@@ -623,20 +627,9 @@ def _filter_track_points(
                 if not inside:
                     kept.append(point)
             # Strict mode: never keep points inside vegetation mask.
-            # Keep the longest contiguous remaining chunk to preserve valid motion.
             if len(kept) < 2:
                 return kept
-            chunks: List[List[TrackPoint]] = []
-            chunk = [kept[0]]
-            for prev, curr in zip(kept[:-1], kept[1:]):
-                if curr.frame - prev.frame <= 1:
-                    chunk.append(curr)
-                else:
-                    chunks.append(chunk)
-                    chunk = [curr]
-            chunks.append(chunk)
-            best = max(chunks, key=len)
-            return best if len(best) >= 2 else kept
+            return kept
 
         min_motion_ratio_per_sec = max(0.0, float(vegetation_cfg.get("min_motion_ratio_per_sec", 0.25)))
         min_consecutive_points = max(2, int(vegetation_cfg.get("min_consecutive_points", 3)))
@@ -671,18 +664,7 @@ def _filter_track_points(
         kept = [p for p in kept if p is not None]
         if len(kept) < 2:
             return track_points
-
-        chunks: List[List[TrackPoint]] = []
-        chunk = [kept[0]]
-        for prev, curr in zip(kept[:-1], kept[1:]):
-            if curr.frame - prev.frame <= 1:
-                chunk.append(curr)
-            else:
-                chunks.append(chunk)
-                chunk = [curr]
-        chunks.append(chunk)
-        best = max(chunks, key=len)
-        return best if len(best) >= 2 else track_points
+        return kept
 
     by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
     for point in points:
@@ -1390,6 +1372,133 @@ def _rescue_crossing_continuation_points(
     return sorted(rescued_points, key=lambda point: (point.track_id, point.frame)), rescues
 
 
+def _rescue_motion_candidate_points(
+    source_points: List[TrackPoint],
+    accepted_points: List[TrackPoint],
+    assessments: List[dict],
+    tracking_cfg: Dict,
+    interaction_mask: np.ndarray | None = None,
+) -> tuple[List[TrackPoint], List[Dict]]:
+    """Recover short, high-motion candidates rejected by spatial masks.
+
+    The primary failure mode in crowded bat emergence videos is not that the
+    blob tracker never sees the animal; it is that post filters reject short
+    fragments because the valid-region/vegetation masks are too conservative.
+    This rescue keeps the noise filters for tiny/stationary blobs, but accepts
+    candidates with enough independent motion evidence.
+    """
+    if not bool(tracking_cfg.get("rescue_motion_candidates", False)):
+        return accepted_points, []
+    if interaction_mask is None:
+        return accepted_points, []
+
+    rescue_reject_reasons = {
+        reason.strip()
+        for reason in str(
+            tracking_cfg.get("rescue_motion_reject_reasons", "valid_region_gate;vegetation_mask")
+        ).split(";")
+        if reason.strip()
+    }
+    min_points = max(2, int(tracking_cfg.get("rescue_motion_min_points", 3)))
+    min_displacement = float(tracking_cfg.get("rescue_motion_min_displacement", 18.0))
+    min_path_length = float(tracking_cfg.get("rescue_motion_min_path_length", 24.0))
+    min_mean_speed = float(tracking_cfg.get("rescue_motion_min_mean_speed", 120.0))
+    min_straightness = float(tracking_cfg.get("rescue_motion_min_straightness", 0.0))
+    interaction_dilate_px = max(0, int(tracking_cfg.get("rescue_motion_interaction_dilate_px", 0)))
+    if interaction_dilate_px > 0:
+        k = 2 * interaction_dilate_px + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        interaction_mask = cv2.dilate(interaction_mask, kernel, iterations=1)
+
+    accepted_track_ids = {int(point.track_id) for point in accepted_points}
+    source_by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
+    for point in source_points:
+        source_by_track[int(point.track_id)].append(point)
+    for track_id in source_by_track:
+        source_by_track[track_id].sort(key=lambda point: point.frame)
+
+    rescued_points = list(accepted_points)
+    rescues: List[Dict] = []
+    for assessment in assessments:
+        if bool(assessment.get("accepted")):
+            continue
+        track_id = int(assessment.get("track_id"))
+        if track_id in accepted_track_ids:
+            continue
+        reasons = {
+            reason.strip()
+            for reason in str(assessment.get("reject_reasons", "")).split(";")
+            if reason.strip()
+        }
+        if not reasons or not reasons.issubset(rescue_reject_reasons):
+            continue
+        num_points = int(assessment.get("num_detections", 0))
+        displacement = float(assessment.get("displacement_px", 0.0))
+        path_length = float(assessment.get("path_length_px", 0.0))
+        mean_speed = float(assessment.get("mean_speed_px_sec", 0.0))
+        straightness = float(assessment.get("straightness", 0.0))
+        if num_points < min_points:
+            continue
+        if displacement < min_displacement or path_length < min_path_length:
+            continue
+        if mean_speed < min_mean_speed:
+            continue
+        if min_straightness > 0.0 and straightness < min_straightness:
+            continue
+
+        fragment = source_by_track.get(track_id, [])
+        if not fragment:
+            continue
+        if not any(_point_in_mask(point, interaction_mask) for point in fragment):
+            continue
+        rescued_points.extend(fragment)
+        accepted_track_ids.add(track_id)
+        rescues.append(
+            {
+                "track_id": track_id,
+                "reject_reasons": ";".join(sorted(reasons)),
+                "points_added": len(fragment),
+                "displacement_px": round(displacement, 3),
+                "path_length_px": round(path_length, 3),
+                "mean_speed_px_sec": round(mean_speed, 3),
+                "straightness": round(straightness, 4),
+            }
+        )
+
+    if not rescues:
+        return accepted_points, []
+    return sorted(rescued_points, key=lambda point: (point.track_id, point.frame)), rescues
+
+
+def _candidate_recall_metrics(assessments: List[dict]) -> Dict:
+    total_tracks = len(assessments)
+    accepted_tracks = sum(1 for row in assessments if bool(row.get("accepted")))
+    rejected_tracks = total_tracks - accepted_tracks
+    accepted_points = 0
+    rejected_points = 0
+    rejection_reasons: Counter = Counter()
+    for row in assessments:
+        n = int(row.get("num_detections", 0))
+        if bool(row.get("accepted")):
+            accepted_points += n
+        else:
+            rejected_points += n
+            for reason in str(row.get("reject_reasons", "")).split(";"):
+                if reason:
+                    rejection_reasons[reason] += 1
+    total_points = accepted_points + rejected_points
+    orphan_pct = (100.0 * rejected_points / total_points) if total_points else 0.0
+    return {
+        "track_candidates_total": total_tracks,
+        "track_candidates_accepted": accepted_tracks,
+        "track_candidates_rejected": rejected_tracks,
+        "track_candidate_points_accepted": accepted_points,
+        "track_candidate_points_rejected": rejected_points,
+        "track_candidate_orphan_detection_pct": orphan_pct,
+        "track_candidate_rejection_reasons": dict(rejection_reasons.most_common()),
+    }
+
+
 def _export_track_clips(
     input_video: str,
     output_dir: Path,
@@ -1717,6 +1826,10 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     secondary_raw_total = 0
     secondary_added_total = 0
     secondary_duplicate_total = 0
+    detections_raw_total = 0
+    detections_after_burst_total = 0
+    frames_with_raw_detections = 0
+    frames_with_detections_after_burst = 0
     primary_detection_debug = []
     secondary_detection_debug = []
 
@@ -1771,9 +1884,17 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
                 secondary_detection_runtime_stats[f"secondary_{key}"] = (
                     secondary_detection_runtime_stats.get(f"secondary_{key}", 0) + int(value)
                 )
+        raw_det_count = len(dets)
+        detections_raw_total += raw_det_count
+        if raw_det_count > 0:
+            frames_with_raw_detections += 1
         if burst_gate is not None and not burst_gate.should_keep(frame_idx, len(dets)):
             dets = []
             suppressed_burst_frames += 1
+        after_burst_count = len(dets)
+        detections_after_burst_total += after_burst_count
+        if after_burst_count > 0:
+            frames_with_detections_after_burst += 1
         tracker_started = perf_counter()
         frame_points = tracker.step(frame_idx, dets)
         perf.record("tracker", perf_counter() - tracker_started, frame_idx=frame_idx)
@@ -1809,11 +1930,20 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         cfg["tracking"],
         frame_size=(meta.width, meta.height),
     )
+    filtered_points, motion_candidate_rescues = _rescue_motion_candidate_points(
+        merged_points,
+        filtered_points,
+        track_assessments,
+        cfg["tracking"],
+        interaction_mask=valid_gate_mask,
+    )
     filtered_points, coexisting_duplicate_track_ids = _dedupe_coexisting_track_points(
         filtered_points,
         cfg["tracking"],
         frame_size=(meta.width, meta.height),
     )
+    track_dedup_result = deduplicate_track_points(filtered_points, cfg["tracking"])
+    filtered_points = track_dedup_result.points
     secondary_kinetic_points: List[TrackPoint] = []
     secondary_kinetic_added_points: List[TrackPoint] = []
     secondary_kinetic_meta: Dict = {"enabled": secondary_kinetic_enabled}
@@ -1942,6 +2072,29 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     track_candidates_csv_path = out_dir / "track_candidates.csv"
     if bool(cfg["tracking"].get("export_track_candidates", False)):
         _write_track_candidates_csv(track_candidates_csv_path, track_assessments)
+
+    track_dedup_outputs: Dict[str, str] = {
+        "track_deduplication_csv": "",
+        "track_deduplication_json": "",
+        "track_deduplication_overlay_png": "",
+    }
+    if track_dedup_result.enabled:
+        track_dedup_csv_path = out_dir / "track_deduplication.csv"
+        track_dedup_json_path = out_dir / "track_deduplication.json"
+        track_dedup_overlay_path = out_dir / "track_deduplication_overlay.png"
+        write_track_deduplication_csv(track_dedup_csv_path, track_dedup_result.rows)
+        write_track_deduplication_json(track_dedup_json_path, track_dedup_result)
+        track_dedup_overlay = render_track_deduplication_overlay(
+            background,
+            merged_points,
+            track_dedup_result.rows,
+        )
+        cv2.imwrite(str(track_dedup_overlay_path), track_dedup_overlay)
+        track_dedup_outputs = {
+            "track_deduplication_csv": str(track_dedup_csv_path.resolve()),
+            "track_deduplication_json": str(track_dedup_json_path.resolve()),
+            "track_deduplication_overlay_png": str(track_dedup_overlay_path.resolve()),
+        }
 
     out_cfg_export = cfg.get("output", {})
     smoothing_on = bool(out_cfg_export.get("trajectory_smoothing_enabled", False))
@@ -2135,6 +2288,20 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     perf.finish()
     perf_summary = perf.summary()
     perf_summary["pipeline_total_wall_sec"] = max(0.0, perf_counter() - pipeline_started)
+    candidate_recall_metrics = _candidate_recall_metrics(track_assessments)
+    motion_rescued_points = sum(int(row.get("points_added", 0)) for row in motion_candidate_rescues)
+    candidate_total_points = (
+        int(candidate_recall_metrics.get("track_candidate_points_accepted", 0))
+        + int(candidate_recall_metrics.get("track_candidate_points_rejected", 0))
+    )
+    effective_orphan_points = max(
+        0,
+        int(candidate_recall_metrics.get("track_candidate_points_rejected", 0)) - motion_rescued_points,
+    )
+    candidate_recall_metrics["track_candidate_points_rescued_motion"] = motion_rescued_points
+    candidate_recall_metrics["track_candidate_orphan_detection_pct_after_rescue"] = (
+        100.0 * effective_orphan_points / candidate_total_points if candidate_total_points else 0.0
+    )
 
     trajectory_smoothing_meta = {
         "enabled": smoothing_on,
@@ -2167,10 +2334,22 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         "valid_region": valid_region_meta,
         "metrics": {
             **_build_metrics(filtered_points, frame_processed),
+            "detections_raw_total": detections_raw_total,
+            "detections_after_burst_total": detections_after_burst_total,
+            "detections_per_frame_raw": detections_raw_total / frame_processed if frame_processed else 0.0,
+            "detections_per_frame_after_burst": detections_after_burst_total / frame_processed if frame_processed else 0.0,
+            "frames_with_raw_detections": frames_with_raw_detections,
+            "frames_with_detections_after_burst": frames_with_detections_after_burst,
             "frames_suppressed_temporal_burst": suppressed_burst_frames,
             "tracks_merged_auto": len(merges_applied),
             "tracks_rescued_crossing_continuations": len(crossing_continuation_rescues),
+            "tracks_rescued_motion_candidates": len(motion_candidate_rescues),
             "tracks_deduped_coexisting": len(coexisting_duplicate_track_ids),
+            "track_deduplication_groups": track_dedup_result.groups_total,
+            "track_deduplication_pairs": track_dedup_result.pairs_total,
+            "track_deduplication_tracks_discarded": track_dedup_result.tracks_discarded,
+            "track_deduplication_tracks_merged": track_dedup_result.tracks_merged,
+            **candidate_recall_metrics,
             "secondary_detection_primary_detections": secondary_primary_total,
             "secondary_detection_raw_detections": secondary_raw_total,
             "secondary_detection_added_detections": secondary_added_total,
@@ -2201,6 +2380,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "tracks_render_json": str(tracks_render_json_path.resolve()),
             "tracks_overlay_png": str(overlay_path.resolve()),
             **detection_debug_outputs,
+            **track_dedup_outputs,
             **secondary_kinetic_outputs,
             "flight_trails_overlay_video": flight_trails_output,
             "track_candidates_csv": (
@@ -2219,6 +2399,16 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "auto_merge_enabled": bool(cfg["tracking"].get("auto_merge_suggested", False)),
             "auto_merges_applied": merges_applied,
             "crossing_continuation_rescues": crossing_continuation_rescues,
+            "motion_candidate_rescues": motion_candidate_rescues,
+            "track_deduplication": {
+                "enabled": track_dedup_result.enabled,
+                "groups_total": track_dedup_result.groups_total,
+                "pairs_total": track_dedup_result.pairs_total,
+                "tracks_discarded": track_dedup_result.tracks_discarded,
+                "tracks_merged": track_dedup_result.tracks_merged,
+                "decisions": track_dedup_result.rows,
+                "pairs": track_dedup_result.pairs,
+            },
             "track_candidates_total": len(track_assessments),
             "track_candidates_kept": sum(1 for row in track_assessments if row["accepted"]),
             "track_candidates_rejected": sum(1 for row in track_assessments if not row["accepted"]),

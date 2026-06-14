@@ -21,6 +21,10 @@ import numpy as np
 from bat_tracker.detection import Detection
 from bat_tracker.kalman_tracker import KalmanTracker
 from bat_tracker.pipeline import _auto_merge_track_points, _filter_track_points
+from bat_tracker.track_deduplication import deduplicate_track_points
+from bat_tracker.track_deduplication import render_track_deduplication_overlay
+from bat_tracker.track_deduplication import write_track_deduplication_csv
+from bat_tracker.track_deduplication import write_track_deduplication_json
 from bat_tracker.tracker import TrackPoint
 
 FPS = 25.0
@@ -168,6 +172,100 @@ def test_no_transitive_megamerge() -> None:
     merged, merges = _auto_merge_track_points(points, _merge_cfg())
     track_ids = {p.track_id for p in merged}
     assert len(track_ids) == 2, "A+B deben unirse; C debe quedar aparte"
+
+
+def _dedupe_cfg(**overrides) -> dict:
+    cfg = {
+        "enable_track_deduplication": True,
+        "max_spatial_distance_px": 12.0,
+        "max_temporal_gap_frames": 3,
+        "min_direction_similarity": 0.75,
+        "min_speed_similarity": 0.50,
+        "min_duplicate_score": 0.75,
+        "merge_strategy": "mark",
+    }
+    cfg.update(overrides)
+    return cfg
+
+
+def test_track_deduplication_discards_clear_duplicate_with_traceability() -> None:
+    points: List[TrackPoint] = []
+    for frame in range(10):
+        points.append(_point(1, frame, 40.0 + 10.0 * frame, 100.0 + 4.0 * frame))
+        points.append(_point(2, frame, 42.0 + 10.0 * frame, 102.0 + 4.0 * frame))
+
+    result = deduplicate_track_points(points, _dedupe_cfg(merge_strategy="discard"))
+
+    assert {point.track_id for point in result.points} == {1}
+    rows = {int(row["track_id_original"]): row for row in result.rows}
+    assert rows[1]["duplicate_decision"] == "keep"
+    assert rows[2]["duplicate_decision"] == "discard"
+    assert rows[2]["duplicate_group_id"] == rows[1]["duplicate_group_id"]
+    assert float(rows[2]["duplicate_score"]) >= 0.75
+    assert rows[2]["reason"]
+
+
+def test_track_deduplication_keeps_crossing_bats_separate() -> None:
+    points: List[TrackPoint] = []
+    for frame in range(21):
+        points.append(_point(1, frame, 40.0 + 8.0 * frame, 40.0 + 5.0 * frame))
+        points.append(_point(2, frame, 40.0 + 8.0 * frame, 140.0 - 5.0 * frame))
+
+    result = deduplicate_track_points(points, _dedupe_cfg(merge_strategy="auto"))
+
+    assert {point.track_id for point in result.points} == {1, 2}
+    assert result.groups_total == 0
+    assert {row["duplicate_decision"] for row in result.rows} == {"keep"}
+
+
+def test_track_deduplication_merges_consecutive_same_bat() -> None:
+    points: List[TrackPoint] = []
+    for frame in range(10):
+        points.append(_point(1, frame, 30.0 + 10.0 * frame, 80.0))
+    for idx, frame in enumerate(range(10, 20)):
+        points.append(_point(2, frame, 130.0 + 10.0 * idx, 80.0))
+
+    result = deduplicate_track_points(points, _dedupe_cfg(merge_strategy="merge", max_spatial_distance_px=12.0))
+
+    assert {point.track_id for point in result.points} == {1}
+    assert len(result.points) == 20
+    rows = {int(row["track_id_original"]): row for row in result.rows}
+    assert rows[1]["duplicate_decision"] == "merge"
+    assert rows[2]["duplicate_decision"] == "merge"
+    assert rows[2]["track_id_final"] == 1
+    assert rows[1]["source_track_ids"] == "1;2"
+
+
+def test_track_deduplication_keeps_parallel_tracks_separate() -> None:
+    points: List[TrackPoint] = []
+    for frame in range(12):
+        points.append(_point(1, frame, 20.0 + 9.0 * frame, 80.0))
+        points.append(_point(2, frame, 20.0 + 9.0 * frame, 100.0))
+
+    result = deduplicate_track_points(points, _dedupe_cfg(merge_strategy="auto", max_spatial_distance_px=8.0))
+
+    assert {point.track_id for point in result.points} == {1, 2}
+    assert result.groups_total == 0
+    assert {row["duplicate_decision"] for row in result.rows} == {"keep"}
+
+
+def test_track_deduplication_writes_debug_artifacts(tmp_path) -> None:
+    points: List[TrackPoint] = []
+    for frame in range(6):
+        points.append(_point(1, frame, 20.0 + 8.0 * frame, 40.0))
+        points.append(_point(2, frame, 21.0 + 8.0 * frame, 41.0))
+
+    result = deduplicate_track_points(points, _dedupe_cfg(merge_strategy="mark"))
+    csv_path = tmp_path / "track_deduplication.csv"
+    json_path = tmp_path / "track_deduplication.json"
+    write_track_deduplication_csv(csv_path, result.rows)
+    write_track_deduplication_json(json_path, result)
+    overlay = render_track_deduplication_overlay(np.zeros((120, 120), dtype=np.uint8), points, result.rows)
+
+    assert csv_path.read_text(encoding="utf-8").startswith("track_id_original,track_id_final")
+    assert "\"duplicate_decision\": \"uncertain\"" in json_path.read_text(encoding="utf-8")
+    assert overlay.shape == (120, 120, 3)
+    assert int(np.count_nonzero(overlay)) > 0
 
 
 def _filter_cfg(mode: str) -> dict:

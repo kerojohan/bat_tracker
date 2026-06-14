@@ -96,6 +96,8 @@ Se escriben en la carpeta indicada por `--output`:
 - `valid_region/profile.png`: debug de region valida (perfil horizontal en modo `horizontal_illumination_profile`; mapa de profundidad en modos `central_deep_layer`/`hybrid_deep_layer_profile`).
 - `tracks.csv`: trayectorias 2D por deteccion y frame.
 - `track_candidates.csv`: auditoria opcional de todos los tracks candidatos tras merge, con `accepted`, `score` y `reject_reasons`.
+- `track_deduplication.csv` / `track_deduplication.json` (opcionales): auditoria de duplicados con `track_id_original`, `duplicate_group_id`, `duplicate_decision`, `duplicate_score` y motivo.
+- `track_deduplication_overlay.png` (opcional): visualizacion de grupos o pares marcados/fusionados por la deduplicacion de tracks.
 - `fast_events.csv`: eventos rapidos reconstruidos desde candidatos, util para vuelos con blur, saltos grandes o salida de la mascara valida.
 - `fast_tracks.csv`: puntos usados por cada evento rapido, con `event_id`, `source_track_id` y motivo de aceptacion/rechazo original.
 - `fast_events_overlay.png`: overlay de los eventos rapidos reconstruidos.
@@ -199,6 +201,9 @@ Usa `config.yaml.example` como base.
   - `tracking.merge_overlap_min_common_frames`: minimo de frames comunes para evaluar merge por solape
   - `tracking.merge_overlap_max_mean_distance`: distancia media maxima en frames comunes
   - `tracking.merge_overlap_min_direction_cosine`: coherencia minima de direccion entre tracks solapados
+  - `tracking.enable_track_deduplication`: activa la auditoria/resolucion explicita de duplicados tras el filtrado de tracks
+  - `tracking.max_spatial_distance_px`, `tracking.max_temporal_gap_frames`, `tracking.min_direction_similarity`, `tracking.min_speed_similarity`, `tracking.min_duplicate_score`: umbrales usados para puntuar duplicados
+  - `tracking.merge_strategy`: `mark` conserva todos los tracks y los marca como `uncertain`; `discard` conserva el mejor track de cada grupo; `merge` remapea los puntos a un unico track; `auto` fusiona continuaciones temporales y descarta duplicados solapados
 - `fast_events.*`: capa opcional para reconstruir salidas muy rapidas agrupando candidatos aceptados/rechazados
   - `fast_events.enabled`: activa los CSV/overlay de eventos rapidos.
   - `fast_events.include_rejected_candidates`: permite usar candidatos descartados por filtros como `valid_region_gate`.
