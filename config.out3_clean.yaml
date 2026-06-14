@@ -128,7 +128,7 @@ vegetation_noise:
   reference_width: 1024
   reference_height: 576
   mask_dilate_px: 3
-  drop_all_points_in_mask: true
+  drop_all_points_in_mask: false
   auto_sample_frames: 400
   auto_max_frame_for_sampling: 1250
   auto_percentile: 88.0

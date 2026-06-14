@@ -627,20 +627,9 @@ def _filter_track_points(
                 if not inside:
                     kept.append(point)
             # Strict mode: never keep points inside vegetation mask.
-            # Keep the longest contiguous remaining chunk to preserve valid motion.
             if len(kept) < 2:
                 return kept
-            chunks: List[List[TrackPoint]] = []
-            chunk = [kept[0]]
-            for prev, curr in zip(kept[:-1], kept[1:]):
-                if curr.frame - prev.frame <= 1:
-                    chunk.append(curr)
-                else:
-                    chunks.append(chunk)
-                    chunk = [curr]
-            chunks.append(chunk)
-            best = max(chunks, key=len)
-            return best if len(best) >= 2 else kept
+            return kept
 
         min_motion_ratio_per_sec = max(0.0, float(vegetation_cfg.get("min_motion_ratio_per_sec", 0.25)))
         min_consecutive_points = max(2, int(vegetation_cfg.get("min_consecutive_points", 3)))
@@ -675,18 +664,7 @@ def _filter_track_points(
         kept = [p for p in kept if p is not None]
         if len(kept) < 2:
             return track_points
-
-        chunks: List[List[TrackPoint]] = []
-        chunk = [kept[0]]
-        for prev, curr in zip(kept[:-1], kept[1:]):
-            if curr.frame - prev.frame <= 1:
-                chunk.append(curr)
-            else:
-                chunks.append(chunk)
-                chunk = [curr]
-        chunks.append(chunk)
-        best = max(chunks, key=len)
-        return best if len(best) >= 2 else track_points
+        return kept
 
     by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
     for point in points:
