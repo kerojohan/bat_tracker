@@ -215,6 +215,42 @@ def test_pipeline_exports_svg_and_render_json_from_in_memory_tracks(tmp_path: Pa
     assert meta["outputs"]["flight_trails_overlay_video"] == ""
 
 
+def test_pipeline_exports_track_deduplication_debug_outputs(tmp_path: Path) -> None:
+    video_path = _make_single_track_video(tmp_path)
+
+    cfg = _base_config()
+    cfg["tracking"]["enable_track_deduplication"] = True
+    cfg["tracking"]["merge_strategy"] = "mark"
+    cfg_path = tmp_path / "cfg_track_dedup.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    out_dir = tmp_path / "out_track_dedup"
+    meta = run_pipeline(str(video_path), str(out_dir), str(cfg_path))
+
+    csv_path = out_dir / "track_deduplication.csv"
+    json_path = out_dir / "track_deduplication.json"
+    overlay_path = out_dir / "track_deduplication_overlay.png"
+    assert csv_path.exists()
+    assert json_path.exists()
+    assert overlay_path.exists()
+    assert meta["outputs"]["track_deduplication_csv"] == str(csv_path.resolve())
+    assert meta["outputs"]["track_deduplication_json"] == str(json_path.resolve())
+    assert meta["outputs"]["track_deduplication_overlay_png"] == str(overlay_path.resolve())
+    rows = _read_tracks(csv_path)
+    assert rows
+    assert {
+        "track_id_original",
+        "duplicate_group_id",
+        "duplicate_decision",
+        "duplicate_score",
+        "reason",
+    }.issubset(rows[0])
+    with json_path.open(encoding="utf-8") as handle:
+        payload = json.load(handle)
+    assert payload["enabled"] is True
+    assert cv2.imread(str(overlay_path), cv2.IMREAD_COLOR) is not None
+
+
 def test_pipeline_secondary_detection_adds_missing_dim_track(tmp_path: Path) -> None:
     video_path = _make_bright_and_dim_tracks_video(tmp_path)
 
