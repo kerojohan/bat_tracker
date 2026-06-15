@@ -84,7 +84,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "min_duplicate_score": 0.75,
         "merge_strategy": "mark",
         "rescue_motion_candidates": False,
-        "rescue_motion_reject_reasons": "vegetation_mask",
+        "rescue_motion_reject_reasons": "valid_region_gate;vegetation_mask",
         "rescue_motion_min_points": 3,
         "rescue_motion_min_displacement": 18.0,
         "rescue_motion_min_path_length": 24.0,

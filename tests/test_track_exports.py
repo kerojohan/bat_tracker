@@ -15,6 +15,7 @@ from bat_tracker.pipeline import (
     _filter_points_excluding_directions,
     _filter_points_start_or_end_in_mask,
     _rescue_crossing_continuation_points,
+    _rescue_motion_candidate_points,
     _write_events_csv,
     _write_tracks_csv,
     run_pipeline,
@@ -448,6 +449,54 @@ def test_final_exports_drop_outside_tracks_consistently(tmp_path: Path) -> None:
         "2": "entry",
         "3": "exit",
     }
+
+
+def test_motion_rescue_kept_but_final_exports_still_drop_outside_tracks() -> None:
+    mask = np.zeros((80, 80), dtype=np.uint8)
+    mask[8:32, 8:32] = 255
+    accepted = [
+        _make_track_point(2, 0, 50, 50),
+        _make_track_point(2, 1, 20, 20),
+    ]
+    rejected_outside = [
+        _make_track_point(1, 0, 45, 45),
+        _make_track_point(1, 1, 20, 20),
+        _make_track_point(1, 2, 50, 50),
+    ]
+    assessments = [
+        {
+            "track_id": 1,
+            "accepted": False,
+            "reject_reasons": "valid_region_gate",
+            "num_detections": 3,
+            "displacement_px": 60.0,
+            "path_length_px": 90.0,
+            "mean_speed_px_sec": 300.0,
+            "straightness": 0.6,
+        }
+    ]
+    rescued, rescues = _rescue_motion_candidate_points(
+        [*accepted, *rejected_outside],
+        accepted,
+        assessments,
+        {
+            "rescue_motion_candidates": True,
+            "rescue_motion_reject_reasons": "valid_region_gate;vegetation_mask",
+            "rescue_motion_min_points": 3,
+            "rescue_motion_min_displacement": 18.0,
+            "rescue_motion_min_path_length": 24.0,
+            "rescue_motion_min_mean_speed": 120.0,
+        },
+        interaction_mask=mask,
+    )
+
+    assert rescues
+    assert {point.track_id for point in rescued} == {1, 2}
+
+    final_points, meta = _filter_points_excluding_directions(rescued, mask, {"outside"})
+
+    assert {point.track_id for point in final_points} == {2}
+    assert meta["tracks_rejected_by_direction_filter"] == 1
 
 
 def test_auto_merge_uses_local_overlap_continuity_for_short_shared_window() -> None:

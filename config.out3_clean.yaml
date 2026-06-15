@@ -73,7 +73,7 @@ tracking:
   rescue_crossing_reference_width: 1024
   rescue_crossing_reference_height: 576
   rescue_motion_candidates: true
-  rescue_motion_reject_reasons: vegetation_mask
+  rescue_motion_reject_reasons: valid_region_gate;vegetation_mask
   rescue_motion_min_points: 3
   rescue_motion_min_displacement: 18.0
   rescue_motion_min_path_length: 24.0
