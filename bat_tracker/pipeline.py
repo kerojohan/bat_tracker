@@ -555,6 +555,55 @@ def _filter_points_start_or_end_in_mask(
     }
 
 
+def _filter_points_excluding_directions(
+    points: List[TrackPoint],
+    mask: np.ndarray | None,
+    excluded_directions: set[str] | None = None,
+) -> tuple[List[TrackPoint], dict]:
+    """Keep final exported tracks aligned with valid-region events."""
+    excluded = excluded_directions or {"outside"}
+    if mask is None or not excluded:
+        track_count = len({point.track_id for point in points})
+        return points, {
+            "direction_filter_enabled": False,
+            "tracks_before_direction_filter": track_count,
+            "tracks_after_direction_filter": track_count,
+            "tracks_rejected_by_direction_filter": 0,
+        }
+
+    by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
+    for point in points:
+        by_track[int(point.track_id)].append(point)
+
+    kept: List[TrackPoint] = []
+    rejected = 0
+    rejected_by_direction: Counter = Counter()
+    for track_points in by_track.values():
+        track_points = sorted(track_points, key=lambda point: point.frame)
+        if not track_points:
+            continue
+        direction = _classify_direction_full(
+            _point_in_mask(track_points[0], mask),
+            _point_in_mask(track_points[-1], mask),
+            track_points,
+            mask,
+            mask.shape[:2],
+        )
+        if direction in excluded:
+            rejected += 1
+            rejected_by_direction[direction] += 1
+            continue
+        kept.extend(track_points)
+
+    return sorted(kept, key=lambda point: (point.track_id, point.frame)), {
+        "direction_filter_enabled": True,
+        "tracks_before_direction_filter": len(by_track),
+        "tracks_after_direction_filter": len({point.track_id for point in kept}),
+        "tracks_rejected_by_direction_filter": rejected,
+        "tracks_rejected_by_direction": dict(rejected_by_direction),
+    }
+
+
 def _save_valid_region_gate_overlay(
     background_gray: np.ndarray,
     gate_mask: np.ndarray,
@@ -1975,6 +2024,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             [*filtered_points, *secondary_kinetic_added_points],
             key=lambda point: (point.track_id, point.frame),
         )
+    filtered_points, final_direction_filter_meta = _filter_points_excluding_directions(
+        filtered_points,
+        valid_gate_mask,
+        {"outside"},
+    )
     perf.record("postprocess_stage", perf_counter() - postprocess_started, executions=1)
     progress.complete_stage("postprocess", detail="postprocess done")
 
@@ -2345,6 +2399,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "tracks_rescued_crossing_continuations": len(crossing_continuation_rescues),
             "tracks_rescued_motion_candidates": len(motion_candidate_rescues),
             "tracks_deduped_coexisting": len(coexisting_duplicate_track_ids),
+            **final_direction_filter_meta,
             "track_deduplication_groups": track_dedup_result.groups_total,
             "track_deduplication_pairs": track_dedup_result.pairs_total,
             "track_deduplication_tracks_discarded": track_dedup_result.tracks_discarded,

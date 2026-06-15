@@ -12,8 +12,11 @@ import yaml
 from bat_tracker.pipeline import (
     _auto_merge_track_points,
     _dedupe_coexisting_track_points,
+    _filter_points_excluding_directions,
     _filter_points_start_or_end_in_mask,
     _rescue_crossing_continuation_points,
+    _write_events_csv,
+    _write_tracks_csv,
     run_pipeline,
 )
 from bat_tracker.render import export_tracks_render_json, export_tracks_svg
@@ -407,6 +410,44 @@ def _make_track_point(track_id: int, frame: int, x: float, y: float) -> TrackPoi
         bbox_y2=int(round(y)) + 1,
         area=20.0,
     )
+
+
+def test_final_exports_drop_outside_tracks_consistently(tmp_path: Path) -> None:
+    mask = np.zeros((80, 80), dtype=np.uint8)
+    mask[8:32, 8:32] = 255
+    points = [
+        _make_track_point(1, 0, 45, 45),
+        _make_track_point(1, 1, 50, 50),
+        _make_track_point(2, 0, 50, 50),
+        _make_track_point(2, 1, 20, 20),
+        _make_track_point(3, 0, 20, 20),
+        _make_track_point(3, 1, 50, 50),
+        _make_track_point(3, 2, 25, 25),
+    ]
+
+    kept, meta = _filter_points_excluding_directions(points, mask, {"outside"})
+
+    assert {point.track_id for point in kept} == {2, 3}
+    assert meta["tracks_rejected_by_direction_filter"] == 1
+
+    tracks_csv = tmp_path / "tracks.csv"
+    events_csv = tmp_path / "events.csv"
+    render_json = tmp_path / "tracks_render.json"
+    _write_tracks_csv(tracks_csv, kept)
+    _write_events_csv(events_csv, kept, mask)
+    export_tracks_render_json(render_json, 80, 80, kept, direction_mask=mask)
+
+    assert {row["track_id"] for row in _read_tracks(tracks_csv)} == {"2", "3"}
+    event_rows = _read_tracks(events_csv)
+    assert {row["track_id"] for row in event_rows} == {"2", "3"}
+    assert {row["track_id"]: row["direction"] for row in event_rows} == {"2": "entry", "3": "exit"}
+    with render_json.open(encoding="utf-8") as handle:
+        payload = json.load(handle)
+    assert [track["track_id"] for track in payload["tracks"]] == [2, 3]
+    assert {str(track["track_id"]): track["direction"] for track in payload["tracks"]} == {
+        "2": "entry",
+        "3": "exit",
+    }
 
 
 def test_auto_merge_uses_local_overlap_continuity_for_short_shared_window() -> None:

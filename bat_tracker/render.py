@@ -93,6 +93,38 @@ def _classify_track_direction(start_inside: bool | None, end_inside: bool | None
     return "outside"
 
 
+def _infer_outside_direction_from_motion(start: TrackPoint, end: TrackPoint, height: int) -> str:
+    dy = end.y - start.y
+    min_vertical_move = max(40.0, 0.15 * float(height))
+    top_band = 0.20 * float(height)
+    if dy <= -min_vertical_move and end.y <= top_band:
+        return "exit"
+    if dy >= min_vertical_move and start.y <= top_band:
+        return "entry"
+    return "outside"
+
+
+def _classify_track_direction_full(
+    track_points: Sequence[TrackPoint],
+    mask: np.ndarray | None,
+    height: int,
+) -> str:
+    if mask is None or not track_points:
+        return "unknown"
+    start = track_points[0]
+    end = track_points[-1]
+    direction = _classify_track_direction(
+        _point_in_mask_xy(start.x, start.y, mask),
+        _point_in_mask_xy(end.x, end.y, mask),
+    )
+    if direction == "inside" and len(track_points) > 2:
+        if any(not _point_in_mask_xy(point.x, point.y, mask) for point in track_points[1:-1]):
+            return "exit"
+    if direction == "outside":
+        return _infer_outside_direction_from_motion(start, end, height)
+    return direction
+
+
 def _point_payload(point: TrackPoint) -> Dict[str, Any]:
     return {
         "x": float(point.x),
@@ -142,9 +174,11 @@ def build_tracks_render_payload(
         end = track_points[-1]
         start_inside = None
         end_inside = None
+        direction = "unknown"
         if effective_direction_mask is not None:
             start_inside = _point_in_mask_xy(start.x, start.y, effective_direction_mask)
             end_inside = _point_in_mask_xy(end.x, end.y, effective_direction_mask)
+            direction = _classify_track_direction_full(track_points, effective_direction_mask, int(height))
 
         tracks_payload.append(
             {
@@ -153,7 +187,7 @@ def build_tracks_render_payload(
                 "frame_start": int(start.frame),
                 "frame_end": int(end.frame),
                 "duration_sec": float(end.time_sec - start.time_sec),
-                "direction": _classify_track_direction(start_inside, end_inside),
+                "direction": direction if effective_direction_mask is not None else _classify_track_direction(start_inside, end_inside),
                 "point_start": _point_payload(start),
                 "point_end": _point_payload(end),
                 "points": [_point_payload(point) for point in track_points],

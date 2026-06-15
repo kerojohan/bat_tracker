@@ -26,7 +26,7 @@ detection:
   temporal_burst_trigger_frames: 3
   temporal_burst_cooldown_frames: 24
 secondary_detection:
-  enabled: false
+  enabled: true
   algorithm: kinetic
   inherit_primary: true
   auto_calibrate: true
@@ -73,7 +73,7 @@ tracking:
   rescue_crossing_reference_width: 1024
   rescue_crossing_reference_height: 576
   rescue_motion_candidates: true
-  rescue_motion_reject_reasons: valid_region_gate;vegetation_mask
+  rescue_motion_reject_reasons: vegetation_mask
   rescue_motion_min_points: 3
   rescue_motion_min_displacement: 18.0
   rescue_motion_min_path_length: 24.0
@@ -151,7 +151,7 @@ output:
   trajectory_smoothing_enabled: false
   trajectory_smoothing_window: 5
 flight_trails:
-  enabled: false
+  enabled: true
   video_filename: flight_trails_overlay.mp4
   history_frames: 12
   max_track_gap_frames: 2
