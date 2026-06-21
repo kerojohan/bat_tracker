@@ -48,6 +48,7 @@ tracking:
   min_track_path_length: 18.0
   min_track_straightness: 0.0
   require_start_or_end_in_valid_region: true
+  entry_exit_zone_source: cave_zones
   valid_region_mode: gate
   valid_region_gate_dilate_px: 0
   auto_merge_suggested: true
@@ -121,6 +122,20 @@ valid_region:
   bottom_contour_regularization_mix: 0.9
   bottom_contour_deepest_strong_ratio: 0.62
   output_subdir: valid_region
+cave_zones:
+  enabled: true
+  method: hybrid
+  input_mask: ''
+  input_annotation: ''
+  use_motion_heatmap: true
+  use_dark_regions: true
+  min_component_area_ratio: 0.002
+  max_components: 3
+  dilate_px: 10
+  motion_percentile: 94.0
+  dark_percentile: 18.0
+  motion_dark_connect_dilate_px: 24
+  output_subdir: cave_zones
 vegetation_noise:
   enabled: true
   input_mask: ''
@@ -150,6 +165,7 @@ output:
   track_clips_padding_frames: 5
   trajectory_smoothing_enabled: false
   trajectory_smoothing_window: 5
+  cleanup_intermediate_outputs: true
 flight_trails:
   enabled: true
   video_filename: flight_trails_overlay.mp4

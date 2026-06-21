@@ -276,6 +276,7 @@ def _filter_cfg(mode: str) -> dict:
         "min_track_path_length": 0.0,
         "min_track_straightness": 0.0,
         "require_start_or_end_in_valid_region": True,
+        "entry_exit_zone_source": "valid_region",
         "valid_region_mode": mode,
         "valid_region_gate_dilate_px": 0,
     }
@@ -319,3 +320,66 @@ def test_valid_region_annotate_keeps_out_of_gate_track_when_not_required() -> No
     assert {p.track_id for p in kept} == {1}
     assert assess[0]["accepted"] is True
     assert assess[0]["start_in_valid_region"] is False
+
+
+def test_entry_exit_mask_classifies_outside_to_inside_as_entry() -> None:
+    valid_mask = np.ones((120, 120), dtype=np.uint8) * 255
+    entry_exit_mask = np.zeros((120, 120), dtype=np.uint8)
+    entry_exit_mask[45:85, 55:95] = 255
+    points = [_point(1, 0, 15.0, 60.0), _point(1, 1, 40.0, 60.0), _point(1, 2, 65.0, 60.0)]
+
+    kept, assess = _filter_track_points(
+        points,
+        _filter_cfg("gate"),
+        FPS,
+        valid_mask=valid_mask,
+        entry_exit_mask=entry_exit_mask,
+    )
+
+    assert {point.track_id for point in kept} == {1}
+    assert assess[0]["accepted"] is True
+    assert assess[0]["direction"] == "entry"
+
+
+def test_entry_exit_mask_classifies_inside_to_outside_as_exit() -> None:
+    valid_mask = np.ones((120, 120), dtype=np.uint8) * 255
+    entry_exit_mask = np.zeros((120, 120), dtype=np.uint8)
+    entry_exit_mask[45:85, 25:65] = 255
+    points = [_point(1, 0, 45.0, 60.0), _point(1, 1, 70.0, 60.0), _point(1, 2, 100.0, 60.0)]
+
+    kept, assess = _filter_track_points(
+        points,
+        _filter_cfg("gate"),
+        FPS,
+        valid_mask=valid_mask,
+        entry_exit_mask=entry_exit_mask,
+    )
+
+    assert {point.track_id for point in kept} == {1}
+    assert assess[0]["accepted"] is True
+    assert assess[0]["direction"] == "exit"
+
+
+def test_entry_exit_mask_keeps_track_crossing_zone_in_intermediate_points() -> None:
+    valid_mask = np.ones((120, 120), dtype=np.uint8) * 255
+    entry_exit_mask = np.zeros((120, 120), dtype=np.uint8)
+    entry_exit_mask[45:85, 45:75] = 255
+    points = [
+        _point(1, 0, 15.0, 60.0),
+        _point(1, 1, 55.0, 60.0),
+        _point(1, 2, 95.0, 60.0),
+    ]
+    cfg = _filter_cfg("gate")
+    cfg["require_start_or_end_in_valid_region"] = False
+
+    kept, assess = _filter_track_points(
+        points,
+        cfg,
+        FPS,
+        valid_mask=valid_mask,
+        entry_exit_mask=entry_exit_mask,
+    )
+
+    assert {point.track_id for point in kept} == {1}
+    assert assess[0]["accepted"] is True
+    assert assess[0]["direction"] in {"entry", "exit", "inside"}

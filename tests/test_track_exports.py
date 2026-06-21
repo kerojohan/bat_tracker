@@ -94,6 +94,9 @@ def _base_config() -> dict:
         "valid_region": {
             "enabled": False,
         },
+        "cave_zones": {
+            "enabled": False,
+        },
         "output": {
             "progress_enabled": False,
             "overlay_line_thickness": 2,
@@ -104,6 +107,7 @@ def _base_config() -> dict:
             "overlay_label_font_scale": 0.5,
             "overlay_label_thickness": 1,
             "export_track_clips": False,
+            "cleanup_intermediate_outputs": False,
         },
     }
 
@@ -217,6 +221,49 @@ def test_pipeline_exports_svg_and_render_json_from_in_memory_tracks(tmp_path: Pa
     assert meta["outputs"]["tracks_svg"] == str((out_dir / "tracks.svg").resolve())
     assert meta["outputs"]["tracks_render_json"] == str((out_dir / "tracks_render.json").resolve())
     assert meta["outputs"]["flight_trails_overlay_video"] == ""
+
+
+def test_pipeline_uses_cave_zones_mask_for_entry_exit_contract(tmp_path: Path) -> None:
+    video_path = _make_single_track_video(tmp_path)
+    cave_mask = np.zeros((48, 64), dtype=np.uint8)
+    cave_mask[18:34, 24:44] = 255
+    cave_mask_path = tmp_path / "cave_mask.png"
+    cv2.imwrite(str(cave_mask_path), cave_mask)
+
+    cfg = _base_config()
+    cfg["tracking"]["require_start_or_end_in_valid_region"] = True
+    cfg["tracking"]["entry_exit_zone_source"] = "cave_zones"
+    cfg["cave_zones"] = {
+        "enabled": True,
+        "method": "annotation",
+        "input_mask": str(cave_mask_path),
+        "input_annotation": "",
+        "min_component_area_ratio": 0.001,
+        "max_components": 1,
+        "dilate_px": 0,
+        "output_subdir": "cave_zones",
+    }
+    cfg["output"]["cleanup_intermediate_outputs"] = False
+    cfg_path = tmp_path / "cfg_cave_zones.yaml"
+    cfg_path.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    out_dir = tmp_path / "out_cave_zones"
+    meta = run_pipeline(str(video_path), str(out_dir), str(cfg_path))
+
+    assert meta["metrics"]["entry_exit_zone_source"] == "cave_zones"
+    assert meta["cave_zones"]["zones_total"] == 1
+    assert Path(meta["outputs"]["cave_zones_mask_png"]).exists()
+    assert Path(meta["outputs"]["cave_zones_overlay_png"]).exists()
+    assert Path(meta["outputs"]["cave_zones_zones_json"]).exists()
+    diagnostics = json.loads(Path(meta["outputs"]["cave_zones_diagnostics_json"]).read_text(encoding="utf-8"))
+    assert diagnostics["track_endpoint_diagnostics"]["final_tracks_vs_entry_exit_zone"]["tracks_total"] == 1
+    assert meta["cave_zones"]["track_endpoint_diagnostics"]["final_tracks_vs_entry_exit_zone"]["tracks_total"] == 1
+    events = list(csv.DictReader((out_dir / "events.csv").open(newline="", encoding="utf-8")))
+    assert events
+    assert {row["direction"] for row in events} == {"entry"}
+    render_payload = json.loads((out_dir / "tracks_render.json").read_text(encoding="utf-8"))
+    assert render_payload["entry_exit_region"]["contours"]
+    assert {track["direction"] for track in render_payload["tracks"]} == {"entry"}
 
 
 def test_pipeline_exports_track_deduplication_debug_outputs(tmp_path: Path) -> None:

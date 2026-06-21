@@ -17,6 +17,7 @@ import cv2
 import numpy as np
 
 from .background import compute_background_median
+from .cave_zones import run_cave_zones
 from .compute import build_execution_plan
 from .config import load_config
 from .detection import build_detection_context
@@ -149,6 +150,137 @@ def _compute_auto_vegetation_mask(
         cap.release()
 
 
+def _save_vegetation_mask_overlay(
+    background: np.ndarray,
+    vegetation_mask: np.ndarray,
+    output_path: Path,
+) -> None:
+    if background.ndim == 2:
+        overlay = cv2.cvtColor(background, cv2.COLOR_GRAY2BGR)
+    else:
+        overlay = background.copy()
+
+    tint = np.zeros_like(overlay)
+    tint[vegetation_mask > 0] = (0, 255, 120)
+    overlay = cv2.addWeighted(overlay, 0.82, tint, 0.42, 0)
+
+    contours, _ = cv2.findContours(
+        (vegetation_mask > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+    cv2.drawContours(overlay, contours, -1, (0, 255, 255), 1, cv2.LINE_AA)
+    cv2.putText(
+        overlay,
+        "vegetation mask (auto)",
+        (10, 26),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.imwrite(str(output_path), overlay)
+
+
+def _accumulate_motion_heatmap(
+    heatmap: np.ndarray,
+    previous_gray: np.ndarray,
+    current_gray: np.ndarray,
+    *,
+    blur_kernel: int,
+    threshold: int,
+) -> None:
+    if blur_kernel < 1 or blur_kernel % 2 == 0:
+        blur_kernel = 5
+    previous_blur = cv2.GaussianBlur(previous_gray, (blur_kernel, blur_kernel), 0)
+    current_blur = cv2.GaussianBlur(current_gray, (blur_kernel, blur_kernel), 0)
+    diff = cv2.absdiff(current_blur, previous_blur)
+    _, binary = cv2.threshold(diff, threshold, 255, cv2.THRESH_BINARY)
+    binary = cv2.morphologyEx(
+        binary,
+        cv2.MORPH_OPEN,
+        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)),
+    )
+    heatmap += diff.astype(np.float32) * (binary.astype(np.float32) / 255.0)
+
+
+def _save_motion_heatmap_overlay(
+    background: np.ndarray,
+    heatmap: np.ndarray,
+    output_path: Path,
+) -> None:
+    if background.ndim == 2:
+        base = cv2.cvtColor(background, cv2.COLOR_GRAY2BGR)
+    else:
+        base = background.copy()
+
+    positive = heatmap[heatmap > 1e-6]
+    if positive.size == 0:
+        cv2.imwrite(str(output_path), base)
+        return
+
+    scale = float(np.percentile(positive, 97.5))
+    scale = max(scale, 1e-6)
+    normalized = np.clip(heatmap / scale, 0.0, 1.0)
+    normalized = np.power(normalized, 0.75, dtype=np.float32)
+    heatmap_u8 = np.uint8(np.round(normalized * 255.0))
+    colored = cv2.applyColorMap(heatmap_u8, cv2.COLORMAP_TURBO)
+    alpha = np.clip(normalized * 0.88, 0.0, 0.88).astype(np.float32)[..., None]
+    out = base.astype(np.float32)
+    out *= 1.0 - alpha
+    out += colored.astype(np.float32) * alpha
+    overlay = np.clip(out, 0.0, 255.0).astype(np.uint8)
+    cv2.putText(
+        overlay,
+        "motion heatmap",
+        (10, 26),
+        cv2.FONT_HERSHEY_SIMPLEX,
+        0.65,
+        (255, 255, 255),
+        2,
+        cv2.LINE_AA,
+    )
+    cv2.imwrite(str(output_path), overlay)
+
+
+_DEBUG_OUTPUT_KEYS = {
+    "primary_detections_overlay_png",
+    "secondary_detections_overlay_png",
+    "track_candidates_csv",
+    "track_deduplication_csv",
+    "track_deduplication_json",
+    "track_deduplication_overlay_png",
+    "secondary_kinetic_tracks_csv",
+    "secondary_kinetic_tracks_overlay_png",
+    "secondary_kinetic_added_tracks_csv",
+    "secondary_kinetic_added_tracks_overlay_png",
+    "tracks_overlay_raw_png",
+    "tracks_overlay_smoothed_png",
+    "vegetation_mask_png",
+    "vegetation_mask_overlay_png",
+    "valid_region_overlay_png",
+    "valid_region_profile_png",
+    "valid_region_gate_overlay_png",
+}
+
+
+def _cleanup_output_files(outputs: Dict[str, str], *, enabled: bool) -> list[str]:
+    if not enabled:
+        return []
+
+    removed_keys: list[str] = []
+    for key in _DEBUG_OUTPUT_KEYS:
+        path_str = str(outputs.get(key, "")).strip()
+        if not path_str:
+            continue
+        try:
+            Path(path_str).unlink(missing_ok=True)
+        except IsADirectoryError:
+            continue
+        removed_keys.append(key)
+        outputs[key] = ""
+    return sorted(removed_keys)
+
+
 CSV_COLUMNS = [
     "video_id",
     "track_id",
@@ -244,6 +376,24 @@ def _classify_direction_full(
             if not _point_in_mask(tp, valid_mask):
                 direction = "exit"
                 break
+    if direction == "outside" and valid_mask is not None and len(tps) > 2:
+        inside_indices = [idx for idx, tp in enumerate(tps[1:-1], start=1) if _point_in_mask(tp, valid_mask)]
+        if inside_indices:
+            ys, xs = np.nonzero(valid_mask > 0)
+            if xs.size > 0:
+                cx = float(np.mean(xs))
+                cy = float(np.mean(ys))
+                start_vec = (tps[0].x - cx, tps[0].y - cy)
+                end_vec = (tps[-1].x - cx, tps[-1].y - cy)
+                if start_vec[0] * end_vec[0] + start_vec[1] * end_vec[1] > 0.0:
+                    return "outside"
+                start_dist = hypot(tps[0].x - cx, tps[0].y - cy)
+                end_dist = hypot(tps[-1].x - cx, tps[-1].y - cy)
+                if end_dist < start_dist * 0.92:
+                    return "entry"
+                if start_dist < end_dist * 0.92:
+                    return "exit"
+            return "inside"
     if direction == "outside" and frame_shape is not None:
         direction = _infer_outside_direction_from_motion(tps[0], tps[-1], frame_shape)
     return direction
@@ -623,6 +773,7 @@ def _filter_track_points(
     tracking_cfg: Dict,
     fps: float,
     valid_mask: np.ndarray | None = None,
+    entry_exit_mask: np.ndarray | None = None,
     vegetation_mask: np.ndarray | None = None,
     vegetation_cfg: Dict | None = None,
 ) -> tuple[List[TrackPoint], List[dict]]:
@@ -645,11 +796,13 @@ def _filter_track_points(
     # explícito por gate cuando se evalúa región válida.
     valid_region_mode = str(tracking_cfg.get("valid_region_mode", "annotate")).strip().lower()
     gate_deletes = valid_region_mode == "gate"
-    gate_mask = _build_valid_region_gate_mask(valid_mask, tracking_cfg)
+    gate_mask = entry_exit_mask if entry_exit_mask is not None else _build_valid_region_gate_mask(valid_mask, tracking_cfg)
+    direction_mask = gate_mask if gate_mask is not None else valid_mask
     strong_short_score_min = 0.9
     vegetation_cfg = vegetation_cfg or {}
 
-    frame_h, frame_w = (valid_mask.shape[:2] if valid_mask is not None else (0, 0))
+    frame_source_mask = direction_mask if direction_mask is not None else valid_mask
+    frame_h, frame_w = (frame_source_mask.shape[:2] if frame_source_mask is not None else (0, 0))
     if frame_h <= 0 or frame_w <= 0:
         max_x = max((point.x for point in points), default=1.0)
         max_y = max((point.y for point in points), default=1.0)
@@ -791,13 +944,13 @@ def _filter_track_points(
         if require_start_or_end_in_valid_region and gate_mask is not None:
             s_in = _point_in_mask(start, gate_mask)
             e_in = _point_in_mask(end, gate_mask)
-            direction = _classify_direction_full(s_in, e_in, track_points, valid_mask)
+            direction = _classify_direction_full(s_in, e_in, track_points, gate_mask, gate_mask.shape[:2])
             if not (s_in or e_in):
                 reject_reasons.append("valid_region_gate")
-        elif valid_mask is not None:
-            s_in = _point_in_mask(start, valid_mask)
-            e_in = _point_in_mask(end, valid_mask)
-            direction = _classify_direction_full(s_in, e_in, track_points, valid_mask, valid_mask.shape[:2])
+        elif direction_mask is not None:
+            s_in = _point_in_mask(start, direction_mask)
+            e_in = _point_in_mask(end, direction_mask)
+            direction = _classify_direction_full(s_in, e_in, track_points, direction_mask, direction_mask.shape[:2])
 
         accepted = not reject_reasons
         if not accepted:
@@ -1548,6 +1701,79 @@ def _candidate_recall_metrics(assessments: List[dict]) -> Dict:
     }
 
 
+def _diagnose_entry_exit_zone(
+    diagnostics_path: str,
+    *,
+    final_points: List[TrackPoint],
+    candidate_points: List[TrackPoint],
+    assessments: List[dict],
+    entry_exit_mask: np.ndarray | None,
+    valid_gate_mask: np.ndarray | None,
+) -> Dict:
+    if not diagnostics_path or entry_exit_mask is None:
+        return {}
+
+    def _endpoint_counts(points: List[TrackPoint], mask: np.ndarray | None) -> dict:
+        by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
+        for point in points:
+            by_track[int(point.track_id)].append(point)
+        if mask is None:
+            return {
+                "tracks_total": len(by_track),
+                "start_inside": 0,
+                "end_inside": 0,
+                "start_or_end_inside": 0,
+                "pct_start_or_end_inside": 0.0,
+            }
+        start_inside = 0
+        end_inside = 0
+        any_inside = 0
+        for track_points in by_track.values():
+            track_points.sort(key=lambda point: point.frame)
+            s_in = _point_in_mask(track_points[0], mask)
+            e_in = _point_in_mask(track_points[-1], mask)
+            start_inside += int(s_in)
+            end_inside += int(e_in)
+            any_inside += int(s_in or e_in)
+        total = len(by_track)
+        return {
+            "tracks_total": total,
+            "start_inside": start_inside,
+            "end_inside": end_inside,
+            "start_or_end_inside": any_inside,
+            "pct_start_or_end_inside": round(100.0 * any_inside / total, 3) if total else 0.0,
+        }
+
+    candidate_by_track: Dict[int, List[TrackPoint]] = defaultdict(list)
+    for point in candidate_points:
+        candidate_by_track[int(point.track_id)].append(point)
+    rejected_gate_track_ids = [
+        int(row["track_id"])
+        for row in assessments
+        if not bool(row.get("accepted")) and "valid_region_gate" in str(row.get("reject_reasons", "")).split(";")
+    ]
+    rejected_touching_entry_exit = 0
+    for track_id in rejected_gate_track_ids:
+        track_points = candidate_by_track.get(track_id, [])
+        if any(_point_in_mask(point, entry_exit_mask) for point in track_points):
+            rejected_touching_entry_exit += 1
+
+    diagnostics_summary = {
+        "final_tracks_vs_entry_exit_zone": _endpoint_counts(final_points, entry_exit_mask),
+        "final_tracks_vs_valid_region_gate": _endpoint_counts(final_points, valid_gate_mask),
+        "rejected_by_gate_total": len(rejected_gate_track_ids),
+        "rejected_by_gate_touching_entry_exit_zone": rejected_touching_entry_exit,
+    }
+    path = Path(diagnostics_path)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except json.JSONDecodeError:
+        payload = {}
+    payload["track_endpoint_diagnostics"] = diagnostics_summary
+    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    return diagnostics_summary
+
+
 def _export_track_clips(
     input_video: str,
     output_dir: Path,
@@ -1668,6 +1894,8 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     perf = PerformanceCollector(meta.frame_count)
     valid_region_cfg = cfg.get("valid_region", {})
     valid_region_enabled = bool(valid_region_cfg.get("enabled", False))
+    cave_zones_cfg = cfg.get("cave_zones", {})
+    cave_zones_enabled = bool(cave_zones_cfg.get("enabled", False))
     secondary_detection_cfg = cfg.get("secondary_detection", {})
     secondary_detection_enabled = bool(secondary_detection_cfg.get("enabled", False))
     secondary_detection_algorithm = str(secondary_detection_cfg.get("algorithm", "foreground")).strip().lower()
@@ -1684,6 +1912,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             ("background", 15.0),
             ("valid_region", 10.0 if valid_region_enabled else 0.0),
             ("frame_processing", 55.0),
+            ("cave_zones", 5.0 if cave_zones_enabled else 0.0),
             ("postprocess", 8.0),
             ("fast_events", 6.0 if fast_events_enabled else 0.0),
             ("heatmap_events", 8.0 if heatmap_events_enabled else 0.0),
@@ -1728,7 +1957,16 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     valid_region_outputs: Dict[str, str] = {}
     vegetation_outputs: Dict[str, str] = {
         "vegetation_mask_png": "",
+        "vegetation_mask_overlay_png": "",
         "vegetation_mask_overlay_video": "",
+    }
+    cave_zones_meta: Dict = {"enabled": False}
+    cave_zones_outputs: Dict[str, str] = {
+        "cave_zones_mask_png": "",
+        "cave_zones_overlay_png": "",
+        "cave_zones_zones_json": "",
+        "cave_zones_candidates_overlay_png": "",
+        "cave_zones_diagnostics_json": "",
     }
 
     if valid_region_enabled:
@@ -1827,34 +2065,16 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
                 k = 2 * dilate_px + 1
                 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
                 vegetation_mask = cv2.dilate(vegetation_mask, kernel, iterations=1)
+
+        if vegetation_mask is not None:
             mask_path = out_dir / "vegetation_mask.png"
             cv2.imwrite(str(mask_path), vegetation_mask)
-
-            # Export a quick overlay video for visual validation.
-            cap = cv2.VideoCapture(input_video)
-            overlay_video_path = out_dir / "vegetation_mask_overlay.mp4"
-            writer = cv2.VideoWriter(
-                str(overlay_video_path),
-                cv2.VideoWriter_fourcc(*"mp4v"),
-                float(meta.fps),
-                (int(meta.width), int(meta.height)),
-            )
-            contours, _ = cv2.findContours((vegetation_mask > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            while True:
-                ok, frame = cap.read()
-                if not ok or frame is None:
-                    break
-                tint = np.zeros_like(frame)
-                tint[vegetation_mask > 0] = (0, 255, 120)
-                ov = cv2.addWeighted(frame, 1.0, tint, 0.38, 0)
-                cv2.drawContours(ov, contours, -1, (0, 255, 255), 1, cv2.LINE_AA)
-                cv2.putText(ov, "vegetation mask (auto)", (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
-                writer.write(ov)
-            cap.release()
-            writer.release()
+            overlay_path = out_dir / "vegetation_mask_overlay.png"
+            _save_vegetation_mask_overlay(background, vegetation_mask, overlay_path)
             vegetation_outputs = {
                 "vegetation_mask_png": str(mask_path.resolve()),
-                "vegetation_mask_overlay_video": str(overlay_video_path.resolve()),
+                "vegetation_mask_overlay_png": str(overlay_path.resolve()),
+                "vegetation_mask_overlay_video": "",
             }
 
     tracker = _build_tracker(cfg["tracking"], fps=meta.fps, video_id=meta.video_id)
@@ -1881,6 +2101,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     frames_with_detections_after_burst = 0
     primary_detection_debug = []
     secondary_detection_debug = []
+    motion_heatmap = np.zeros((meta.height, meta.width), dtype=np.float32)
+    motion_heatmap_previous_gray: np.ndarray | None = None
+    motion_heatmap_cfg = cfg.get("heatmap_events", {})
+    motion_heatmap_blur_kernel = int(motion_heatmap_cfg.get("blur_kernel", 5))
+    motion_heatmap_threshold = int(motion_heatmap_cfg.get("threshold", 14))
 
     all_points: List[TrackPoint] = []
     frame_processed = 0
@@ -1889,6 +2114,15 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
 
     for frame_idx, gray in iter_gray_frames(input_video, perf=perf):
         frame_started = perf_counter()
+        if motion_heatmap_previous_gray is not None:
+            _accumulate_motion_heatmap(
+                motion_heatmap,
+                motion_heatmap_previous_gray,
+                gray,
+                blur_kernel=motion_heatmap_blur_kernel,
+                threshold=motion_heatmap_threshold,
+            )
+        motion_heatmap_previous_gray = gray
         dets = detect_foreground_blobs(
             gray,
             background,
@@ -1961,6 +2195,31 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
 
     progress.complete_stage("frame_processing", detail=f"frames {frame_processed}")
 
+    cave_zone_mask: np.ndarray | None = None
+    if cave_zones_enabled:
+        progress.start_stage("cave_zones")
+        cave_zones_subdir = str(cave_zones_cfg.get("output_subdir", "cave_zones"))
+        cave_result = run_cave_zones(
+            background_gray=background,
+            output_dir=out_dir / cave_zones_subdir,
+            cfg=cave_zones_cfg,
+            motion_heatmap=motion_heatmap,
+        )
+        cave_zone_mask = cave_result.mask
+        cave_zones_meta = cave_result.meta
+        cave_zones_outputs = cave_result.outputs
+        progress.complete_stage("cave_zones", detail=f"zones {len(cave_result.zones)}")
+
+    entry_exit_zone_source_cfg = str(cfg["tracking"].get("entry_exit_zone_source", "cave_zones")).strip().lower()
+    entry_exit_mask: np.ndarray | None = None
+    entry_exit_zone_source = "none"
+    if entry_exit_zone_source_cfg == "cave_zones" and cave_zone_mask is not None:
+        entry_exit_mask = cave_zone_mask
+        entry_exit_zone_source = "cave_zones"
+    elif valid_gate_mask is not None:
+        entry_exit_mask = valid_gate_mask
+        entry_exit_zone_source = "valid_region"
+
     progress.start_stage("postprocess")
     postprocess_started = perf_counter()
     merged_points, merges_applied = _auto_merge_track_points(all_points, cfg["tracking"])
@@ -1969,6 +2228,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         cfg["tracking"],
         meta.fps,
         valid_mask=valid_mask,
+        entry_exit_mask=entry_exit_mask,
         vegetation_mask=vegetation_mask,
         vegetation_cfg=vegetation_cfg,
     )
@@ -1984,7 +2244,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         filtered_points,
         track_assessments,
         cfg["tracking"],
-        interaction_mask=valid_gate_mask,
+        interaction_mask=entry_exit_mask,
     )
     filtered_points, coexisting_duplicate_track_ids = _dedupe_coexisting_track_points(
         filtered_points,
@@ -2007,7 +2267,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         )
         secondary_kinetic_points, secondary_kinetic_mask_meta = _filter_points_start_or_end_in_mask(
             secondary_kinetic_points,
-            valid_gate_mask,
+            entry_exit_mask,
         )
         max_primary_track_id = max((point.track_id for point in filtered_points), default=0)
         secondary_kinetic_added_points, secondary_kinetic_dedupe_meta = dedupe_secondary_track_points(
@@ -2026,7 +2286,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         )
     filtered_points, final_direction_filter_meta = _filter_points_excluding_directions(
         filtered_points,
-        valid_gate_mask,
+        entry_exit_mask,
         {"outside"},
     )
     perf.record("postprocess_stage", perf_counter() - postprocess_started, executions=1)
@@ -2159,7 +2419,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
 
     events_csv_path = out_dir / "events.csv"
     points_for_events = smoothed_points if smoothed_points is not None else filtered_points
-    _write_events_csv(events_csv_path, points_for_events, valid_gate_mask)
+    _write_events_csv(events_csv_path, points_for_events, entry_exit_mask)
     tracks_svg_path = out_dir / "tracks.svg"
     export_tracks_svg(
         tracks_svg_path,
@@ -2174,7 +2434,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         label_font_scale=float(cfg["output"].get("overlay_label_font_scale", 0.5)),
         label_thickness=int(cfg["output"].get("overlay_label_thickness", 1)),
         valid_region_mask=valid_mask,
-        direction_mask=valid_gate_mask,
+        direction_mask=entry_exit_mask,
     )
     tracks_render_json_path = out_dir / "tracks_render.json"
     export_tracks_render_json(
@@ -2183,7 +2443,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         height=meta.height,
         points=filtered_points,
         valid_region_mask=valid_mask,
-        direction_mask=valid_gate_mask,
+        direction_mask=entry_exit_mask,
     )
 
     overlay_line_t = int(cfg["output"]["overlay_line_thickness"])
@@ -2356,7 +2616,18 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     candidate_recall_metrics["track_candidate_orphan_detection_pct_after_rescue"] = (
         100.0 * effective_orphan_points / candidate_total_points if candidate_total_points else 0.0
     )
+    cave_zones_diagnostics_summary = _diagnose_entry_exit_zone(
+        cave_zones_outputs.get("cave_zones_diagnostics_json", ""),
+        final_points=filtered_points,
+        candidate_points=merged_points,
+        assessments=track_assessments,
+        entry_exit_mask=entry_exit_mask,
+        valid_gate_mask=valid_gate_mask,
+    )
+    if cave_zones_diagnostics_summary:
+        cave_zones_meta["track_endpoint_diagnostics"] = cave_zones_diagnostics_summary
 
+    cleanup_intermediate_outputs = bool(cfg["output"].get("cleanup_intermediate_outputs", True))
     trajectory_smoothing_meta = {
         "enabled": smoothing_on,
         "window": ts_window,
@@ -2367,6 +2638,36 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "tracks_overlay_raw_png": str((out_dir / "tracks_overlay_raw.png").resolve()),
             "tracks_overlay_smoothed_png": str((out_dir / "tracks_overlay_smoothed.png").resolve()),
         }
+
+    motion_heatmap_overlay_path = out_dir / "motion_heatmap_overlay.png"
+    _save_motion_heatmap_overlay(background, motion_heatmap, motion_heatmap_overlay_path)
+
+    outputs_payload = {
+        "background_png": str(background_path.resolve()),
+        "tracks_csv": str(tracks_csv_path.resolve()),
+        "events_csv": str(events_csv_path.resolve()),
+        "tracks_svg": str(tracks_svg_path.resolve()),
+        "tracks_render_json": str(tracks_render_json_path.resolve()),
+        "tracks_overlay_png": str(overlay_path.resolve()),
+        "motion_heatmap_overlay_png": str(motion_heatmap_overlay_path.resolve()),
+        **cave_zones_outputs,
+        **detection_debug_outputs,
+        **track_dedup_outputs,
+        **secondary_kinetic_outputs,
+        "flight_trails_overlay_video": flight_trails_output,
+        "track_candidates_csv": (
+            str(track_candidates_csv_path.resolve())
+            if bool(cfg["tracking"].get("export_track_candidates", False))
+            else ""
+        ),
+        **overlay_smoothing_paths,
+        **fast_event_outputs,
+        **heatmap_event_outputs,
+        "track_clips": track_clip_outputs,
+        **valid_region_outputs,
+        **vegetation_outputs,
+    }
+    cleaned_output_keys = _cleanup_output_files(outputs_payload, enabled=cleanup_intermediate_outputs)
 
     meta_payload = {
         "trajectory_smoothing": trajectory_smoothing_meta,
@@ -2386,6 +2687,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "context_duration_sec": float(cfg["background"].get("context_duration_sec", -1.0)),
         },
         "valid_region": valid_region_meta,
+        "cave_zones": cave_zones_meta,
         "metrics": {
             **_build_metrics(filtered_points, frame_processed),
             "detections_raw_total": detections_raw_total,
@@ -2399,6 +2701,10 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "tracks_rescued_crossing_continuations": len(crossing_continuation_rescues),
             "tracks_rescued_motion_candidates": len(motion_candidate_rescues),
             "tracks_deduped_coexisting": len(coexisting_duplicate_track_ids),
+            "entry_exit_zone_source": entry_exit_zone_source,
+            "cave_zones_rejected_by_gate_touching_entry_exit_zone": int(
+                cave_zones_diagnostics_summary.get("rejected_by_gate_touching_entry_exit_zone", 0)
+            ),
             **final_direction_filter_meta,
             "track_deduplication_groups": track_dedup_result.groups_total,
             "track_deduplication_pairs": track_dedup_result.pairs_total,
@@ -2427,28 +2733,10 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "selection_reason": execution_plan.reason,
         },
         "performance": perf_summary,
-        "outputs": {
-            "background_png": str(background_path.resolve()),
-            "tracks_csv": str(tracks_csv_path.resolve()),
-            "events_csv": str(events_csv_path.resolve()),
-            "tracks_svg": str(tracks_svg_path.resolve()),
-            "tracks_render_json": str(tracks_render_json_path.resolve()),
-            "tracks_overlay_png": str(overlay_path.resolve()),
-            **detection_debug_outputs,
-            **track_dedup_outputs,
-            **secondary_kinetic_outputs,
-            "flight_trails_overlay_video": flight_trails_output,
-            "track_candidates_csv": (
-                str(track_candidates_csv_path.resolve())
-                if bool(cfg["tracking"].get("export_track_candidates", False))
-                else ""
-            ),
-            **overlay_smoothing_paths,
-            **fast_event_outputs,
-            **heatmap_event_outputs,
-            "track_clips": track_clip_outputs,
-            **valid_region_outputs,
-            **vegetation_outputs,
+        "outputs": outputs_payload,
+        "cleanup": {
+            "enabled": cleanup_intermediate_outputs,
+            "removed_output_keys": cleaned_output_keys,
         },
         "postprocess": {
             "auto_merge_enabled": bool(cfg["tracking"].get("auto_merge_suggested", False)),
