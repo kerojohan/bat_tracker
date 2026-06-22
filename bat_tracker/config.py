@@ -65,7 +65,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "min_track_path_length": 18.0,
         "min_track_straightness": 0.0,
         "require_start_or_end_in_valid_region": False,
-        "entry_exit_zone_source": "cave_zones",
+        "entry_exit_zone_source": "auto",
         "valid_region_mode": "annotate",
         "valid_region_gate_dilate_px": 0,
         "auto_merge_suggested": False,
@@ -201,6 +201,26 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "motion_dark_connect_dilate_px": 18,
         "output_subdir": "cave_zones",
     },
+    "cavemark": {
+        "enabled": False,
+        "input_mask": "",
+        "input_annotation": "",
+        "dilate_px": 0,
+        "output_subdir": "cavemark",
+    },
+    "entry_exit_zone_selection": {
+        "vegetation_overlap_penalty": 0.45,
+        "motion_weight": 0.25,
+        "dark_weight": 0.25,
+        "endpoint_weight": 0.30,
+        "area_weight": 0.20,
+        "cavemark_bias": 0.12,
+        "cave_zones_bias": 0.0,
+        "valid_region_bias": -0.15,
+        "dark_percentile": 18.0,
+        "ideal_area_ratio": 0.04,
+        "max_reasonable_area_ratio": 0.18,
+    },
     "vegetation_noise": {
         "enabled": False,
         "input_mask": "",
@@ -209,6 +229,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "reference_width": 1024,
         "reference_height": 576,
         "mask_dilate_px": 0,
+        # Prevent cave entrances/exits from being treated as vegetation noise.
+        "exclude_entry_exit_zones": True,
+        "exclude_entry_exit_dilate_px": 12,
+        "entry_exit_exclusion_mode": "weak_evidence",
+        "entry_exit_keep_texture_percentile": 88.0,
+        "entry_exit_keep_min_intensity_percentile": 35.0,
+        "entry_exit_keep_min_gradient": 4.0,
         # If True, remove every track point that falls inside vegetation mask.
         "drop_all_points_in_mask": False,
         "auto_sample_frames": 220,
@@ -345,10 +372,10 @@ def _validate_config(cfg: Dict[str, Any]) -> None:
         raise ValueError(
             f"tracking.valid_region_mode must be one of gate/annotate, got: {valid_region_mode}"
         )
-    entry_exit_zone_source = str(tracking.get("entry_exit_zone_source", "cave_zones")).strip().lower()
-    if entry_exit_zone_source not in {"cave_zones", "valid_region"}:
+    entry_exit_zone_source = str(tracking.get("entry_exit_zone_source", "auto")).strip().lower()
+    if entry_exit_zone_source not in {"auto", "cave_zones", "cavemark", "valid_region"}:
         raise ValueError(
-            "tracking.entry_exit_zone_source must be one of cave_zones/valid_region, "
+            "tracking.entry_exit_zone_source must be one of auto/cave_zones/cavemark/valid_region, "
             f"got: {entry_exit_zone_source}"
         )
     merge_strategy = str(tracking.get("merge_strategy", "mark")).strip().lower()
@@ -394,6 +421,25 @@ def _validate_config(cfg: Dict[str, Any]) -> None:
             "cave_zones.min_component_area_ratio must be between 0 and 1, "
             f"got: {min_component_area_ratio}"
         )
+
+    cavemark = cfg.get("cavemark", {})
+    if not isinstance(cavemark, dict):
+        raise ValueError("cavemark config must be a mapping/dictionary")
+
+    entry_exit_selection = cfg.get("entry_exit_zone_selection", {})
+    if not isinstance(entry_exit_selection, dict):
+        raise ValueError("entry_exit_zone_selection config must be a mapping/dictionary")
+    for field in (
+        "vegetation_overlap_penalty",
+        "motion_weight",
+        "dark_weight",
+        "endpoint_weight",
+        "area_weight",
+        "cavemark_bias",
+        "cave_zones_bias",
+        "valid_region_bias",
+    ):
+        float(entry_exit_selection.get(field, DEFAULT_CONFIG["entry_exit_zone_selection"][field]))
 
     secondary_detection = cfg.get("secondary_detection", {})
     if not isinstance(secondary_detection, dict):

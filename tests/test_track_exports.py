@@ -12,10 +12,12 @@ import yaml
 from bat_tracker.pipeline import (
     _auto_merge_track_points,
     _dedupe_coexisting_track_points,
+    _exclude_mask_from_vegetation,
     _filter_points_excluding_directions,
     _filter_points_start_or_end_in_mask,
     _rescue_crossing_continuation_points,
     _rescue_motion_candidate_points,
+    _select_entry_exit_mask,
     _write_events_csv,
     _write_tracks_csv,
     run_pipeline,
@@ -356,6 +358,49 @@ def test_secondary_points_are_filtered_by_start_or_end_mask() -> None:
     assert meta["tracks_rejected_by_mask_filter"] == 1
 
 
+def test_vegetation_mask_excludes_entry_exit_zone() -> None:
+    vegetation = np.zeros((80, 80), dtype=np.uint8)
+    vegetation[10:30, 10:30] = 255
+    vegetation[45:65, 45:65] = 255
+    entry_exit = np.zeros((80, 80), dtype=np.uint8)
+    entry_exit[8:32, 8:32] = 255
+    background = np.full((80, 80), 40, dtype=np.uint8)
+    background[45:65, 45:65] = 160
+
+    cleaned, meta = _exclude_mask_from_vegetation(background, vegetation, entry_exit, dilate_px=0)
+
+    assert cleaned is not None
+    assert int(np.count_nonzero(cleaned[10:30, 10:30])) == 0
+    assert int(np.count_nonzero(cleaned[45:65, 45:65])) > 0
+    assert meta["vegetation_exclusion_enabled"] is True
+    assert meta["vegetation_pixels_removed_by_exclusion"] == 400
+
+
+def test_vegetation_mask_keeps_textured_entry_exit_evidence() -> None:
+    vegetation = np.zeros((80, 80), dtype=np.uint8)
+    vegetation[10:30, 10:30] = 255
+    entry_exit = np.zeros((80, 80), dtype=np.uint8)
+    entry_exit[8:32, 8:32] = 255
+    background = np.full((80, 80), 90, dtype=np.uint8)
+    background[10:30, 10:30] = 155
+    for x in range(10, 30, 4):
+        background[10:30, x : x + 2] = 230
+
+    cleaned, meta = _exclude_mask_from_vegetation(
+        background,
+        vegetation,
+        entry_exit,
+        dilate_px=0,
+        mode="weak_evidence",
+        keep_texture_percentile=70.0,
+        keep_min_intensity_percentile=20.0,
+    )
+
+    assert cleaned is not None
+    assert int(np.count_nonzero(cleaned[10:30, 10:30])) > 0
+    assert meta["vegetation_pixels_kept_in_entry_exit_zone"] > 0
+
+
 def test_realtime_trails_keep_coherent_motion_and_reject_local_jitter() -> None:
     renderer = RealTimeTrailRenderer(
         (80, 80),
@@ -458,6 +503,77 @@ def _make_track_point(track_id: int, frame: int, x: float, y: float) -> TrackPoi
         bbox_y2=int(round(y)) + 1,
         area=20.0,
     )
+
+
+def test_auto_entry_exit_selection_penalizes_vegetation_overlap() -> None:
+    background = np.full((80, 100), 180, dtype=np.uint8)
+    background[20:45, 12:35] = 20
+    background[20:45, 62:88] = 35
+
+    cavemark = np.zeros_like(background)
+    cavemark[20:45, 12:35] = 255
+    cave_zones = np.zeros_like(background)
+    cave_zones[20:45, 62:88] = 255
+    vegetation = np.zeros_like(background)
+    vegetation[18:48, 60:90] = 255
+    motion = np.zeros_like(background, dtype=np.float32)
+    motion[cave_zones > 0] = 10.0
+    motion[cavemark > 0] = 7.0
+    points = [
+        _make_track_point(1, 0, 5, 30),
+        _make_track_point(1, 1, 20, 30),
+        _make_track_point(2, 0, 20, 30),
+        _make_track_point(2, 1, 45, 30),
+    ]
+
+    selected, selected_source, meta = _select_entry_exit_mask(
+        source_cfg="auto",
+        candidates={"cavemark": cavemark, "cave_zones": cave_zones},
+        background=background,
+        motion_heatmap=motion,
+        vegetation_mask=vegetation,
+        raw_points=points,
+        selection_cfg={
+            "vegetation_overlap_penalty": 0.8,
+            "motion_weight": 0.25,
+            "dark_weight": 0.25,
+            "endpoint_weight": 0.30,
+            "area_weight": 0.20,
+            "cavemark_bias": 0.12,
+            "cave_zones_bias": 0.0,
+            "dark_percentile": 20.0,
+        },
+    )
+
+    assert selected is cavemark
+    assert selected_source == "cavemark"
+    assert meta["selected_source"] == "cavemark"
+    scores = {row["source"]: row for row in meta["scores"]}
+    assert scores["cave_zones"]["vegetation_overlap_ratio"] > 0.9
+    assert scores["cavemark"]["vegetation_overlap_ratio"] == 0.0
+    assert scores["cavemark"]["score"] > scores["cave_zones"]["score"]
+
+
+def test_explicit_entry_exit_selection_keeps_requested_source() -> None:
+    background = np.full((40, 40), 100, dtype=np.uint8)
+    cave_zones = np.zeros_like(background)
+    cave_zones[10:20, 10:20] = 255
+    valid_region = np.zeros_like(background)
+    valid_region[20:35, 20:35] = 255
+
+    selected, selected_source, meta = _select_entry_exit_mask(
+        source_cfg="cave_zones",
+        candidates={"cave_zones": cave_zones, "valid_region": valid_region},
+        background=background,
+        motion_heatmap=None,
+        vegetation_mask=None,
+        raw_points=[],
+        selection_cfg={},
+    )
+
+    assert selected is cave_zones
+    assert selected_source == "cave_zones"
+    assert meta["reason"] == "explicit_source"
 
 
 def test_final_exports_drop_outside_tracks_consistently(tmp_path: Path) -> None:

@@ -98,6 +98,7 @@ Se escriben en la carpeta indicada por `--output`:
 - `cave_zones/overlay.png`: fondo con zonas de entrada/salida y contornos.
 - `cave_zones/zones.json`: componentes seleccionados con `bbox`, area, score y origen.
 - `cave_zones/zone_diagnostics.json` y `cave_zones/zone_candidates_overlay.png`: diagnostico de candidatos y puntuaciones.
+- `cavemark/mask.png` y `cavemark/overlay.png`: normalizacion opcional de una mascara/anotacion Cavemark configurada explicitamente.
 - `tracks.csv`: trayectorias 2D por deteccion y frame.
 - `track_candidates.csv`: auditoria opcional de todos los tracks candidatos tras merge, con `accepted`, `score` y `reject_reasons`.
 - `track_deduplication.csv` / `track_deduplication.json` (opcionales): auditoria de duplicados con `track_id_original`, `duplicate_group_id`, `duplicate_decision`, `duplicate_score` y motivo.
@@ -118,7 +119,7 @@ Se escriben en la carpeta indicada por `--output`:
 - `flight_trails_overlay.mp4` (opcional): video con estelas temporales superpuestas sobre el video original cuando `flight_trails.enabled` esta activo.
 - `track_clips/` (opcional): clips de video por track (`track_0001_000120-000186.mp4`, etc.).
 - `meta.json`: metadatos del video, parametros efectivos y metricas de ejecucion.
-  - incluye bloques `video`, `parameters`, `background`, `valid_region`, `cave_zones`, `metrics`, `execution`, `performance`, `outputs`, `trajectory_smoothing`, `postprocess` y `track_quality`.
+  - incluye bloques `video`, `parameters`, `background`, `valid_region`, `cave_zones`, `cavemark`, `entry_exit_zone_selection`, `metrics`, `execution`, `performance`, `outputs`, `trajectory_smoothing`, `postprocess` y `track_quality`.
   - `postprocess` resume tambien cuantos candidatos se aceptaron/rechazaron y las causas mas frecuentes.
   - `track_quality` evalua la calidad de las trayectorias sin necesidad de ground truth: distribuciones de longitud/duracion/desplazamiento/rectitud, resumen de fusiones (`merges_by_reason`, `max_merge_group_size`) y `over_merge_suspect_tracks` (tracks largos con rectitud muy baja, candidatos a contener varios murcielagos fundidos).
 
@@ -193,7 +194,7 @@ Usa `config.yaml.example` como base.
   - `tracking.kalman_measurement_std`: ruido de medida del centroide (px)
   - `tracking.kalman_high_area_threshold`: area minima para considerar una deteccion "fuerte" (1a fase); las mas pequenas/tenues se asocian en la 2a fase y no crean tracks nuevos
   - `tracking.valid_region_mode`: `annotate` (por defecto; la region valida solo etiqueta `in_valid_region`/`direction` y NO borra tracks) o `gate` (descarta los tracks que no empiezan ni acaban dentro de la gate). El modo `gate` requiere ademas `require_start_or_end_in_valid_region: true`
-  - `tracking.entry_exit_zone_source`: `cave_zones` usa la mascara semantica de entrada/salida para direcciones y filtros; `valid_region` mantiene el comportamiento historico. Si `cave_zones` no produce mascara, se cae a `valid_region`.
+  - `tracking.entry_exit_zone_source`: `auto` compara `cavemark`, `cave_zones` y `valid_region`; `cave_zones`, `cavemark` o `valid_region` fuerzan una fuente concreta. Si la fuente forzada no produce mascara, se cae a `valid_region`.
   - `tracking.merge_max_group_overlap_frames`: anti-coexistencia; numero maximo de frames compartidos entre dos grupos al fusionarlos (evita unir murcielagos paralelos del mismo corredor)
   - `tracking.merge_duplicate_max_distance`: distancia media para considerar dos tracks "la misma deteccion" y permitir su fusion pese al solape temporal (track duplicado real)
   - `tracking.merge_max_group_size`: anti-transitividad; tope de tracks distintos por grupo fusionado (`0` = sin tope)
@@ -253,6 +254,20 @@ Usa `config.yaml.example` como base.
   - `cave_zones.input_annotation`: overlay anotado en rojo para depuracion o casos manuales; solo se usa si se configura explicitamente. Un valor vacio no busca `background_cave.png`.
   - `cave_zones.use_motion_heatmap` y `cave_zones.use_dark_regions`: fuentes automaticas del modo hibrido.
   - `cave_zones.min_component_area_ratio`, `max_components` y `dilate_px`: controlan filtrado, numero maximo de zonas y tolerancia espacial.
+- `cavemark.*`: fuente opcional de entrada/salida basada en una mascara o anotacion Cavemark.
+  - `cavemark.enabled`: activa la carga/export normalizada de Cavemark.
+  - `cavemark.input_mask`: mascara binaria preferida para Cavemark.
+  - `cavemark.input_annotation`: overlay anotado en rojo; se convierte a mascara solo si se configura explicitamente.
+  - `cavemark.dilate_px`: tolerancia espacial aplicada a la mascara cargada.
+- `entry_exit_zone_selection.*`: arbitraje usado cuando `tracking.entry_exit_zone_source: auto`.
+  - Penaliza el solape con `vegetation_noise`, porque la vegetacion es evidencia negativa para boca de cueva.
+  - Puntua soporte de movimiento, oscuridad del fondo, proximidad/cruce de endpoints brutos y tamano razonable.
+  - Guarda `meta.json.entry_exit_zone_selection` con fuente elegida, scores y razon.
+- `vegetation_noise.*`: mascara de ruido por vegetacion/movimiento local persistente
+  - `vegetation_noise.exclude_entry_exit_zones`: refina la mascara de vegetacion dentro de la zona efectiva de entrada/salida seleccionada para evitar que movimiento/sombra de boca de cueva se trate como vegetacion.
+  - `vegetation_noise.entry_exit_exclusion_mode`: `weak_evidence` conserva pixeles con textura/contraste suficiente para poder soportar vegetacion real dentro de una entrada; `none` desactiva el refinado interno.
+  - `vegetation_noise.exclude_entry_exit_dilate_px`: margen adicional en pixeles alrededor de la entrada/salida que se evalua con el refinado.
+  - `vegetation_noise.entry_exit_keep_texture_percentile`, `entry_exit_keep_min_intensity_percentile` y `entry_exit_keep_min_gradient`: umbrales para conservar evidencia estructural de vegetacion dentro de la entrada/salida.
 - `output.*`: estilo del overlay y artefactos de salida
   - `output.overlay_line_thickness`: grosor de linea en `tracks_overlay.png` y `tracks.svg`
   - `output.overlay_start_radius`: radio del marcador del primer punto del track

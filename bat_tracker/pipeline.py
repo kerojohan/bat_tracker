@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 
 from .background import compute_background_median
-from .cave_zones import run_cave_zones
+from .cave_zones import annotation_to_mask, run_cave_zones
 from .compute import build_execution_plan
 from .config import load_config
 from .detection import build_detection_context
@@ -179,6 +179,312 @@ def _save_vegetation_mask_overlay(
         cv2.LINE_AA,
     )
     cv2.imwrite(str(output_path), overlay)
+
+
+def _exclude_mask_from_vegetation(
+    background_gray: np.ndarray | None,
+    vegetation_mask: np.ndarray | None,
+    exclude_mask: np.ndarray | None,
+    *,
+    dilate_px: int = 0,
+    mode: str = "weak_evidence",
+    keep_texture_percentile: float = 88.0,
+    keep_min_intensity_percentile: float = 35.0,
+    keep_min_gradient: float = 4.0,
+) -> tuple[np.ndarray | None, dict]:
+    if vegetation_mask is None or exclude_mask is None:
+        return vegetation_mask, {
+            "vegetation_exclusion_enabled": False,
+            "vegetation_exclusion_mode": mode,
+            "vegetation_pixels_before_exclusion": int(np.count_nonzero(vegetation_mask)) if vegetation_mask is not None else 0,
+            "vegetation_pixels_after_exclusion": int(np.count_nonzero(vegetation_mask)) if vegetation_mask is not None else 0,
+            "vegetation_pixels_removed_by_exclusion": 0,
+            "vegetation_pixels_kept_in_entry_exit_zone": 0,
+        }
+    if vegetation_mask.shape[:2] != exclude_mask.shape[:2]:
+        raise ValueError(
+            "vegetation exclusion mask shape does not match vegetation mask shape: "
+            f"expected {vegetation_mask.shape[:2]}, got {exclude_mask.shape[:2]}"
+        )
+
+    exclusion = np.where(exclude_mask > 0, 255, 0).astype(np.uint8)
+    if dilate_px > 0:
+        k = 2 * int(dilate_px) + 1
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
+        exclusion = cv2.dilate(exclusion, kernel, iterations=1)
+
+    before = int(np.count_nonzero(vegetation_mask))
+    cleaned = vegetation_mask.copy()
+    overlap = (exclusion > 0) & (vegetation_mask > 0)
+    keep_inside = np.zeros_like(overlap, dtype=bool)
+    mode = str(mode or "weak_evidence").strip().lower()
+    if mode == "weak_evidence" and background_gray is not None:
+        if background_gray.shape[:2] != vegetation_mask.shape[:2]:
+            raise ValueError(
+                "vegetation background shape does not match vegetation mask shape: "
+                f"expected {vegetation_mask.shape[:2]}, got {background_gray.shape[:2]}"
+            )
+        gx = cv2.Sobel(background_gray, cv2.CV_32F, 1, 0, ksize=3)
+        gy = cv2.Sobel(background_gray, cv2.CV_32F, 0, 1, ksize=3)
+        grad = np.sqrt(gx * gx + gy * gy)
+        texture_threshold = max(
+            float(keep_min_gradient),
+            float(np.percentile(grad, float(np.clip(keep_texture_percentile, 50.0, 99.5)))),
+        )
+        intensity_threshold = float(
+            np.percentile(background_gray, float(np.clip(keep_min_intensity_percentile, 1.0, 95.0)))
+        )
+        # Keep only structural, non-cave-shadow evidence inside the entrance zone.
+        keep_inside = (grad >= texture_threshold) & (background_gray >= intensity_threshold)
+    elif mode == "none":
+        keep_inside = overlap
+
+    removed = overlap & ~keep_inside
+    cleaned[removed] = 0
+    after = int(np.count_nonzero(cleaned))
+    return cleaned, {
+        "vegetation_exclusion_enabled": True,
+        "vegetation_exclusion_mode": mode,
+        "vegetation_exclusion_dilate_px": int(max(0, dilate_px)),
+        "vegetation_pixels_before_exclusion": before,
+        "vegetation_pixels_after_exclusion": after,
+        "vegetation_pixels_removed_by_exclusion": before - after,
+        "vegetation_pixels_kept_in_entry_exit_zone": int(np.count_nonzero(overlap & keep_inside)),
+    }
+
+
+def _save_binary_mask_overlay(
+    background: np.ndarray,
+    mask: np.ndarray,
+    output_path: Path,
+    *,
+    title: str,
+    color: tuple[int, int, int] = (0, 210, 255),
+) -> None:
+    if background.ndim == 2:
+        overlay = cv2.cvtColor(background, cv2.COLOR_GRAY2BGR)
+    else:
+        overlay = background.copy()
+    tint = np.zeros_like(overlay)
+    tint[mask > 0] = color
+    overlay = cv2.addWeighted(overlay, 0.80, tint, 0.38, 0)
+    contours, _ = cv2.findContours((mask > 0).astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cv2.drawContours(overlay, contours, -1, (0, 255, 255), 2, cv2.LINE_AA)
+    cv2.putText(overlay, title, (10, 26), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (255, 255, 255), 2, cv2.LINE_AA)
+    cv2.imwrite(str(output_path), overlay)
+
+
+def _load_cavemark_mask(
+    *,
+    background: np.ndarray,
+    cfg: Dict,
+    output_dir: Path,
+) -> tuple[np.ndarray | None, Dict, Dict[str, str]]:
+    outputs = {
+        "cavemark_mask_png": "",
+        "cavemark_overlay_png": "",
+    }
+    meta: Dict = {
+        "enabled": bool(cfg.get("enabled", False)),
+        "source": "",
+        "mask_nonzero_px": 0,
+        "outputs": outputs,
+    }
+    if not bool(cfg.get("enabled", False)):
+        return None, meta, outputs
+
+    expected_shape = background.shape[:2]
+    mask: np.ndarray | None = None
+    input_mask = str(cfg.get("input_mask", "")).strip()
+    input_annotation = str(cfg.get("input_annotation", "")).strip()
+    if input_mask:
+        mask = load_valid_region_mask(input_mask)
+        meta["source"] = "input_mask"
+        meta["input_mask"] = str(Path(input_mask).resolve())
+    elif input_annotation:
+        annotation = cv2.imread(str(Path(input_annotation).expanduser()), cv2.IMREAD_COLOR)
+        if annotation is None:
+            raise RuntimeError(f"Could not load cavemark annotation: {input_annotation}")
+        mask = annotation_to_mask(annotation)
+        meta["source"] = "input_annotation"
+        meta["input_annotation"] = str(Path(input_annotation).resolve())
+
+    if mask is None:
+        return None, meta, outputs
+    if mask.shape[:2] != expected_shape:
+        raise ValueError(
+            "cavemark mask shape does not match the processing frame size: "
+            f"expected {expected_shape}, got {mask.shape[:2]}"
+        )
+    mask = np.where(mask > 0, 255, 0).astype(np.uint8)
+    dilate_px = max(0, int(cfg.get("dilate_px", 0)))
+    if dilate_px > 0 and np.any(mask):
+        k = 2 * dilate_px + 1
+        mask = cv2.dilate(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k)), iterations=1)
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    mask_path = output_dir / "mask.png"
+    overlay_path = output_dir / "overlay.png"
+    cv2.imwrite(str(mask_path), mask)
+    _save_binary_mask_overlay(background, mask, overlay_path, title="cavemark entry/exit")
+    outputs.update(
+        {
+            "cavemark_mask_png": str(mask_path.resolve()),
+            "cavemark_overlay_png": str(overlay_path.resolve()),
+        }
+    )
+    meta.update({"mask_nonzero_px": int(np.count_nonzero(mask)), "outputs": outputs})
+    return (mask if np.any(mask) else None), meta, outputs
+
+
+def _points_by_track(points: List[TrackPoint]) -> Dict[int, List[TrackPoint]]:
+    grouped: Dict[int, List[TrackPoint]] = defaultdict(list)
+    for point in points:
+        grouped[int(point.track_id)].append(point)
+    for track_points in grouped.values():
+        track_points.sort(key=lambda point: point.frame)
+    return grouped
+
+
+def _point_in_binary_mask(point: TrackPoint, mask: np.ndarray) -> bool:
+    x = int(round(point.x))
+    y = int(round(point.y))
+    return 0 <= y < mask.shape[0] and 0 <= x < mask.shape[1] and mask[y, x] > 0
+
+
+def _score_entry_exit_candidate(
+    *,
+    source: str,
+    mask: np.ndarray,
+    background: np.ndarray,
+    motion_heatmap: np.ndarray | None,
+    vegetation_mask: np.ndarray | None,
+    raw_points: List[TrackPoint],
+    cfg: Dict,
+) -> Dict:
+    binary = mask > 0
+    area = int(np.count_nonzero(binary))
+    frame_area = max(1, mask.shape[0] * mask.shape[1])
+    area_ratio = area / float(frame_area)
+    if area == 0:
+        return {
+            "source": source,
+            "score": -999.0,
+            "area_ratio": 0.0,
+            "motion_support": 0.0,
+            "dark_ratio": 0.0,
+            "endpoint_support": 0.0,
+            "vegetation_overlap_ratio": 0.0,
+        }
+
+    vegetation_overlap_ratio = 0.0
+    if vegetation_mask is not None:
+        vegetation_overlap_ratio = float(np.count_nonzero(binary & (vegetation_mask > 0))) / float(area)
+
+    dark_threshold = float(np.percentile(background, float(np.clip(cfg.get("dark_percentile", 18.0), 1.0, 60.0))))
+    dark_ratio = float(np.mean(background[binary] <= dark_threshold))
+
+    motion_support = 0.0
+    if motion_heatmap is not None:
+        positive = motion_heatmap[motion_heatmap > 1e-6]
+        motion_scale = float(np.percentile(positive, 95.0)) if positive.size else 1.0
+        motion_support = float(np.mean(np.clip(motion_heatmap[binary] / max(motion_scale, 1e-6), 0.0, 1.0)))
+
+    tracks = _points_by_track(raw_points)
+    endpoint_hits = 0
+    crossing_hits = 0
+    for track_points in tracks.values():
+        if not track_points:
+            continue
+        start_inside = _point_in_binary_mask(track_points[0], mask)
+        end_inside = _point_in_binary_mask(track_points[-1], mask)
+        if start_inside or end_inside:
+            endpoint_hits += 1
+        elif any(_point_in_binary_mask(point, mask) for point in track_points[1:-1]):
+            crossing_hits += 1
+    tracks_total = max(1, len(tracks))
+    endpoint_support = min(1.0, (endpoint_hits + 0.5 * crossing_hits) / float(tracks_total))
+
+    ideal_area_ratio = max(1e-6, float(cfg.get("ideal_area_ratio", 0.04)))
+    max_reasonable_area_ratio = max(ideal_area_ratio, float(cfg.get("max_reasonable_area_ratio", 0.18)))
+    area_score = 1.0 - min(1.0, abs(area_ratio - ideal_area_ratio) / max_reasonable_area_ratio)
+
+    source_bias = float(cfg.get(f"{source}_bias", 0.0))
+    score = (
+        float(cfg.get("motion_weight", 0.25)) * motion_support
+        + float(cfg.get("dark_weight", 0.25)) * dark_ratio
+        + float(cfg.get("endpoint_weight", 0.30)) * endpoint_support
+        + float(cfg.get("area_weight", 0.20)) * area_score
+        + source_bias
+        - float(cfg.get("vegetation_overlap_penalty", 0.45)) * vegetation_overlap_ratio
+    )
+    return {
+        "source": source,
+        "score": round(float(score), 6),
+        "area_ratio": round(float(area_ratio), 6),
+        "motion_support": round(float(motion_support), 6),
+        "dark_ratio": round(float(dark_ratio), 6),
+        "endpoint_support": round(float(endpoint_support), 6),
+        "endpoint_tracks": int(endpoint_hits),
+        "crossing_tracks": int(crossing_hits),
+        "tracks_total": int(len(tracks)),
+        "vegetation_overlap_ratio": round(float(vegetation_overlap_ratio), 6),
+    }
+
+
+def _select_entry_exit_mask(
+    *,
+    source_cfg: str,
+    candidates: Dict[str, np.ndarray | None],
+    background: np.ndarray,
+    motion_heatmap: np.ndarray | None,
+    vegetation_mask: np.ndarray | None,
+    raw_points: List[TrackPoint],
+    selection_cfg: Dict,
+) -> tuple[np.ndarray | None, str, Dict]:
+    source_cfg = str(source_cfg or "auto").strip().lower()
+    if source_cfg != "auto":
+        selected = candidates.get(source_cfg)
+        if selected is None and source_cfg != "valid_region":
+            selected = candidates.get("valid_region")
+            selected_source = "valid_region" if selected is not None else "none"
+        else:
+            selected_source = source_cfg if selected is not None else "none"
+        return selected, selected_source, {
+            "mode": source_cfg,
+            "selected_source": selected_source,
+            "scores": [],
+            "reason": "explicit_source",
+        }
+
+    scores = [
+        _score_entry_exit_candidate(
+            source=source,
+            mask=mask,
+            background=background,
+            motion_heatmap=motion_heatmap,
+            vegetation_mask=vegetation_mask,
+            raw_points=raw_points,
+            cfg=selection_cfg,
+        )
+        for source, mask in candidates.items()
+        if mask is not None
+    ]
+    scores.sort(key=lambda row: float(row["score"]), reverse=True)
+    if not scores:
+        return None, "none", {"mode": "auto", "selected_source": "none", "scores": [], "reason": "no_candidates"}
+
+    selected_source = str(scores[0]["source"])
+    selected = candidates.get(selected_source)
+    reason = "highest_score"
+    if float(scores[0].get("vegetation_overlap_ratio", 0.0)) >= 0.5:
+        reason = "highest_score_despite_high_vegetation_overlap"
+    return selected, selected_source, {
+        "mode": "auto",
+        "selected_source": selected_source,
+        "scores": scores,
+        "reason": reason,
+    }
 
 
 def _accumulate_motion_heatmap(
@@ -1968,6 +2274,17 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         "cave_zones_candidates_overlay_png": "",
         "cave_zones_diagnostics_json": "",
     }
+    cavemark_meta: Dict = {"enabled": False}
+    cavemark_outputs: Dict[str, str] = {
+        "cavemark_mask_png": "",
+        "cavemark_overlay_png": "",
+    }
+    entry_exit_zone_selection_meta: Dict = {
+        "mode": str(cfg["tracking"].get("entry_exit_zone_source", "auto")),
+        "selected_source": "none",
+        "scores": [],
+        "reason": "",
+    }
 
     if valid_region_enabled:
         progress.start_stage("valid_region")
@@ -2065,17 +2382,6 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
                 k = 2 * dilate_px + 1
                 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
                 vegetation_mask = cv2.dilate(vegetation_mask, kernel, iterations=1)
-
-        if vegetation_mask is not None:
-            mask_path = out_dir / "vegetation_mask.png"
-            cv2.imwrite(str(mask_path), vegetation_mask)
-            overlay_path = out_dir / "vegetation_mask_overlay.png"
-            _save_vegetation_mask_overlay(background, vegetation_mask, overlay_path)
-            vegetation_outputs = {
-                "vegetation_mask_png": str(mask_path.resolve()),
-                "vegetation_mask_overlay_png": str(overlay_path.resolve()),
-                "vegetation_mask_overlay_video": "",
-            }
 
     tracker = _build_tracker(cfg["tracking"], fps=meta.fps, video_id=meta.video_id)
     burst_gate = TemporalBurstGate.from_detection_cfg(cfg["detection"])
@@ -2210,15 +2516,59 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         cave_zones_outputs = cave_result.outputs
         progress.complete_stage("cave_zones", detail=f"zones {len(cave_result.zones)}")
 
-    entry_exit_zone_source_cfg = str(cfg["tracking"].get("entry_exit_zone_source", "cave_zones")).strip().lower()
-    entry_exit_mask: np.ndarray | None = None
-    entry_exit_zone_source = "none"
-    if entry_exit_zone_source_cfg == "cave_zones" and cave_zone_mask is not None:
-        entry_exit_mask = cave_zone_mask
-        entry_exit_zone_source = "cave_zones"
-    elif valid_gate_mask is not None:
-        entry_exit_mask = valid_gate_mask
-        entry_exit_zone_source = "valid_region"
+    cavemark_mask: np.ndarray | None = None
+    cavemark_cfg = cfg.get("cavemark", {})
+    if bool(cavemark_cfg.get("enabled", False)):
+        cavemark_subdir = str(cavemark_cfg.get("output_subdir", "cavemark"))
+        cavemark_mask, cavemark_meta, cavemark_outputs = _load_cavemark_mask(
+            background=background,
+            cfg=cavemark_cfg,
+            output_dir=out_dir / cavemark_subdir,
+        )
+
+    entry_exit_zone_source_cfg = str(cfg["tracking"].get("entry_exit_zone_source", "auto")).strip().lower()
+    entry_exit_mask, entry_exit_zone_source, entry_exit_zone_selection_meta = _select_entry_exit_mask(
+        source_cfg=entry_exit_zone_source_cfg,
+        candidates={
+            "cavemark": cavemark_mask,
+            "cave_zones": cave_zone_mask,
+            "valid_region": valid_gate_mask,
+        },
+        background=background,
+        motion_heatmap=motion_heatmap,
+        vegetation_mask=vegetation_mask,
+        raw_points=all_points,
+        selection_cfg=cfg.get("entry_exit_zone_selection", {}),
+    )
+
+    vegetation_exclusion_meta: Dict = {
+        "vegetation_exclusion_enabled": False,
+        "vegetation_pixels_before_exclusion": int(np.count_nonzero(vegetation_mask)) if vegetation_mask is not None else 0,
+        "vegetation_pixels_after_exclusion": int(np.count_nonzero(vegetation_mask)) if vegetation_mask is not None else 0,
+        "vegetation_pixels_removed_by_exclusion": 0,
+    }
+    if vegetation_mask is not None and bool(vegetation_cfg.get("exclude_entry_exit_zones", True)):
+        vegetation_mask, vegetation_exclusion_meta = _exclude_mask_from_vegetation(
+            background,
+            vegetation_mask,
+            entry_exit_mask,
+            dilate_px=max(0, int(vegetation_cfg.get("exclude_entry_exit_dilate_px", 12))),
+            mode=str(vegetation_cfg.get("entry_exit_exclusion_mode", "weak_evidence")),
+            keep_texture_percentile=float(vegetation_cfg.get("entry_exit_keep_texture_percentile", 88.0)),
+            keep_min_intensity_percentile=float(vegetation_cfg.get("entry_exit_keep_min_intensity_percentile", 35.0)),
+            keep_min_gradient=float(vegetation_cfg.get("entry_exit_keep_min_gradient", 4.0)),
+        )
+
+    if vegetation_mask is not None:
+        mask_path = out_dir / "vegetation_mask.png"
+        cv2.imwrite(str(mask_path), vegetation_mask)
+        overlay_path = out_dir / "vegetation_mask_overlay.png"
+        _save_vegetation_mask_overlay(background, vegetation_mask, overlay_path)
+        vegetation_outputs = {
+            "vegetation_mask_png": str(mask_path.resolve()),
+            "vegetation_mask_overlay_png": str(overlay_path.resolve()),
+            "vegetation_mask_overlay_video": "",
+        }
 
     progress.start_stage("postprocess")
     postprocess_started = perf_counter()
@@ -2651,6 +3001,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         "tracks_overlay_png": str(overlay_path.resolve()),
         "motion_heatmap_overlay_png": str(motion_heatmap_overlay_path.resolve()),
         **cave_zones_outputs,
+        **cavemark_outputs,
         **detection_debug_outputs,
         **track_dedup_outputs,
         **secondary_kinetic_outputs,
@@ -2688,6 +3039,8 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         },
         "valid_region": valid_region_meta,
         "cave_zones": cave_zones_meta,
+        "cavemark": cavemark_meta,
+        "entry_exit_zone_selection": entry_exit_zone_selection_meta,
         "metrics": {
             **_build_metrics(filtered_points, frame_processed),
             "detections_raw_total": detections_raw_total,
@@ -2702,6 +3055,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "tracks_rescued_motion_candidates": len(motion_candidate_rescues),
             "tracks_deduped_coexisting": len(coexisting_duplicate_track_ids),
             "entry_exit_zone_source": entry_exit_zone_source,
+            **vegetation_exclusion_meta,
             "cave_zones_rejected_by_gate_touching_entry_exit_zone": int(
                 cave_zones_diagnostics_summary.get("rejected_by_gate_touching_entry_exit_zone", 0)
             ),
