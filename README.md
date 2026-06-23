@@ -90,10 +90,15 @@ Ejemplos de configuracion incluidos:
 Se escriben en la carpeta indicada por `--output`:
 
 - `background.png`: fondo estimado por mediana temporal.
-- `valid_region/mask.png`: mascara binaria vertical (255 zona valida, 0 laterales invalidos).
+- `valid_region/mask.png`: mascara binaria de region util de imagen (255 zona valida, 0 vignette/ruido lateral).
 - `valid_region/overlay.png`: debug visual de banda valida sobre la imagen.
 - `valid_region/gate_overlay.png`: debug visual del gate real usado en tracking tras aplicar `valid_region_gate_dilate_px`.
 - `valid_region/profile.png`: debug de region valida (perfil horizontal en modo `horizontal_illumination_profile`; mapa de profundidad en modos `central_deep_layer`/`hybrid_deep_layer_profile`).
+- `cave_zones/mask.png`: mascara binaria de zonas fisicas de entrada/salida de cueva.
+- `cave_zones/overlay.png`: fondo con zonas de entrada/salida y contornos.
+- `cave_zones/zones.json`: componentes seleccionados con `bbox`, area, score y origen.
+- `cave_zones/zone_diagnostics.json` y `cave_zones/zone_candidates_overlay.png`: diagnostico de candidatos y puntuaciones.
+- `cavemark/mask.png` y `cavemark/overlay.png`: normalizacion opcional de una mascara/anotacion Cavemark configurada explicitamente.
 - `tracks.csv`: trayectorias 2D por deteccion y frame.
 - `track_candidates.csv`: auditoria opcional de todos los tracks candidatos tras merge, con `accepted`, `score` y `reject_reasons`.
 - `track_deduplication.csv` / `track_deduplication.json` (opcionales): auditoria de duplicados con `track_id_original`, `duplicate_group_id`, `duplicate_decision`, `duplicate_score` y motivo.
@@ -109,13 +114,16 @@ Se escriben en la carpeta indicada por `--output`:
 - `tracks_render.json`: export JSON con `width`, `height`, puntos por track y metadatos minimos (`track_id`, `frame_start`, `frame_end`, `duration_sec`, `direction`, `point_start`, `point_end`).
   - `direction` usa el vocabulario `entry`, `exit`, `inside`, `outside`, `unknown`.
 - `tracks_overlay.png`: trayectorias dibujadas sobre `background.png`.
+- `motion_heatmap_overlay.png`: fondo con el heatmap acumulado de movimiento del video.
 - `tracks_overlay_raw.png` y `tracks_overlay_smoothed.png` (opcionales): overlays adicionales cuando `output.trajectory_smoothing_enabled` esta activo.
 - `flight_trails_overlay.mp4` (opcional): video con estelas temporales superpuestas sobre el video original cuando `flight_trails.enabled` esta activo.
 - `track_clips/` (opcional): clips de video por track (`track_0001_000120-000186.mp4`, etc.).
 - `meta.json`: metadatos del video, parametros efectivos y metricas de ejecucion.
-  - incluye bloques `video`, `parameters`, `background`, `valid_region`, `metrics`, `execution`, `performance`, `outputs`, `trajectory_smoothing`, `postprocess` y `track_quality`.
+  - incluye bloques `video`, `parameters`, `background`, `valid_region`, `cave_zones`, `cavemark`, `entry_exit_zone_selection`, `metrics`, `execution`, `performance`, `outputs`, `trajectory_smoothing`, `postprocess` y `track_quality`.
   - `postprocess` resume tambien cuantos candidatos se aceptaron/rechazaron y las causas mas frecuentes.
   - `track_quality` evalua la calidad de las trayectorias sin necesidad de ground truth: distribuciones de longitud/duracion/desplazamiento/rectitud, resumen de fusiones (`merges_by_reason`, `max_merge_group_size`) y `over_merge_suspect_tracks` (tracks largos con rectitud muy baja, candidatos a contener varios murcielagos fundidos).
+
+Los artefactos de depuracion o auditoria, como `track_candidates.csv`, los overlays de detecciones/deduplicacion/secundarios, `valid_region/profile.png`, `vegetation_mask*.png` y `tracks_overlay_raw.png`/`tracks_overlay_smoothed.png`, se eliminan al final por defecto. Para conservarlos, usa `output.cleanup_intermediate_outputs: false`.
 
 ## Formato de tracks.csv
 
@@ -143,8 +151,9 @@ Columnas exactas:
 8. Merge automatico opcional, conservador y no transitivo, de tracks fragmentados antes del filtrado final (con guardas anti-coexistencia y tope de grupo para no fundir murcielagos distintos).
 9. Evaluacion centralizada de tracks candidatos (score + motivos de rechazo) y export de `tracks.csv`, `events.csv`, `tracks.svg`, `tracks_render.json` y render final `tracks_overlay.png`.
 10. Export opcional de `flight_trails_overlay.mp4` con estelas temporales acumuladas sobre el video original si `flight_trails.enabled`.
-11. Si `valid_region.enabled`, calculo de banda vertical valida desde iluminacion horizontal y guardado en `valid_region/*`.
-12. Export de `meta.json` con parametros, metadatos y metricas.
+11. Generacion de `motion_heatmap_overlay.png` con el fondo y el heatmap acumulado de movimiento del video.
+12. Si `valid_region.enabled`, calculo de banda vertical valida desde iluminacion horizontal y guardado en `valid_region/*`.
+13. Export de `meta.json` con parametros, metadatos y metricas.
    - incluye `postprocess.auto_merges_applied` cuando `tracking.auto_merge_suggested` esta activo.
    - incluye `trajectory_smoothing.enabled/window` y rutas extra de overlay cuando el suavizado esta activado.
 
@@ -185,6 +194,7 @@ Usa `config.yaml.example` como base.
   - `tracking.kalman_measurement_std`: ruido de medida del centroide (px)
   - `tracking.kalman_high_area_threshold`: area minima para considerar una deteccion "fuerte" (1a fase); las mas pequenas/tenues se asocian en la 2a fase y no crean tracks nuevos
   - `tracking.valid_region_mode`: `annotate` (por defecto; la region valida solo etiqueta `in_valid_region`/`direction` y NO borra tracks) o `gate` (descarta los tracks que no empiezan ni acaban dentro de la gate). El modo `gate` requiere ademas `require_start_or_end_in_valid_region: true`
+  - `tracking.entry_exit_zone_source`: `auto` compara `cavemark`, `cave_zones` y `valid_region`; `cave_zones`, `cavemark` o `valid_region` fuerzan una fuente concreta. Si la fuente forzada no produce mascara, se cae a `valid_region`.
   - `tracking.merge_max_group_overlap_frames`: anti-coexistencia; numero maximo de frames compartidos entre dos grupos al fusionarlos (evita unir murcielagos paralelos del mismo corredor)
   - `tracking.merge_duplicate_max_distance`: distancia media para considerar dos tracks "la misma deteccion" y permitir su fusion pese al solape temporal (track duplicado real)
   - `tracking.merge_max_group_size`: anti-transitividad; tope de tracks distintos por grupo fusionado (`0` = sin tope)
@@ -237,6 +247,27 @@ Usa `config.yaml.example` como base.
   - `valid_region.depth_percentile/depth_morph_kernel/depth_min_area_ratio`: parametros del modo `central_deep_layer`
   - `valid_region.depth_layer_percentiles` + `valid_region.depth_layer_dilate_px`: expansion no uniforme por capas de profundidad (listas emparejadas)
   - `valid_region.bottom_contour_*`: refinado opcional del borde inferior ajustandolo al gradiente vertical de profundidad (`*_search_*` define ventana de busqueda, `*_smooth_window` suaviza la curva, `*_gradient_quantile` controla sensibilidad, `*_regularization`/`*_max_step_px` reducen muescas, `*_downward_bias` permite bajar cuando hay empate, `*_regularization_mix` mezcla ajuste local/global, `*_deepest_strong_ratio` favorece el borde fuerte mas profundo frente a crestas intermedias)
+- `cave_zones.*`: mascara semantica para entrada/salida de cuevas, separada de `valid_region`
+  - `cave_zones.enabled`: activa la deteccion/export de zonas de entrada/salida.
+  - `cave_zones.method`: `hybrid`, `annotation`, `motion` o `dark`.
+  - `cave_zones.input_mask`: mascara binaria robusta y prioritaria para un video concreto.
+  - `cave_zones.input_annotation`: overlay anotado en rojo para depuracion o casos manuales; solo se usa si se configura explicitamente. Un valor vacio no busca `background_cave.png`.
+  - `cave_zones.use_motion_heatmap` y `cave_zones.use_dark_regions`: fuentes automaticas del modo hibrido.
+  - `cave_zones.min_component_area_ratio`, `max_components` y `dilate_px`: controlan filtrado, numero maximo de zonas y tolerancia espacial.
+- `cavemark.*`: fuente opcional de entrada/salida basada en una mascara o anotacion Cavemark.
+  - `cavemark.enabled`: activa la carga/export normalizada de Cavemark.
+  - `cavemark.input_mask`: mascara binaria preferida para Cavemark.
+  - `cavemark.input_annotation`: overlay anotado en rojo; se convierte a mascara solo si se configura explicitamente.
+  - `cavemark.dilate_px`: tolerancia espacial aplicada a la mascara cargada.
+- `entry_exit_zone_selection.*`: arbitraje usado cuando `tracking.entry_exit_zone_source: auto`.
+  - Penaliza el solape con `vegetation_noise`, porque la vegetacion es evidencia negativa para boca de cueva.
+  - Puntua soporte de movimiento, oscuridad del fondo, proximidad/cruce de endpoints brutos y tamano razonable.
+  - Guarda `meta.json.entry_exit_zone_selection` con fuente elegida, scores y razon.
+- `vegetation_noise.*`: mascara de ruido por vegetacion/movimiento local persistente
+  - `vegetation_noise.exclude_entry_exit_zones`: refina la mascara de vegetacion dentro de la zona efectiva de entrada/salida seleccionada para evitar que movimiento/sombra de boca de cueva se trate como vegetacion.
+  - `vegetation_noise.entry_exit_exclusion_mode`: `weak_evidence` conserva pixeles con textura/contraste suficiente para poder soportar vegetacion real dentro de una entrada; `none` desactiva el refinado interno.
+  - `vegetation_noise.exclude_entry_exit_dilate_px`: margen adicional en pixeles alrededor de la entrada/salida que se evalua con el refinado.
+  - `vegetation_noise.entry_exit_keep_texture_percentile`, `entry_exit_keep_min_intensity_percentile` y `entry_exit_keep_min_gradient`: umbrales para conservar evidencia estructural de vegetacion dentro de la entrada/salida.
 - `output.*`: estilo del overlay y artefactos de salida
   - `output.overlay_line_thickness`: grosor de linea en `tracks_overlay.png` y `tracks.svg`
   - `output.overlay_start_radius`: radio del marcador del primer punto del track
@@ -251,6 +282,7 @@ Usa `config.yaml.example` como base.
   - `output.track_clips_padding_frames`: frames extra antes/despues del rango del track
   - `output.trajectory_smoothing_enabled`: genera una version suavizada de las trayectorias para overlays y `events.csv`
   - `output.trajectory_smoothing_window`: ventana impar >= 3 usada en el suavizado
+  - `output.cleanup_intermediate_outputs`: borra al final los artefactos de depuracion/auditoria; desactivalo para conservarlos
 - `execution.*`: seleccion de backend de computo
   - `execution.device`: `auto` (default), `cpu` o `cuda`
   - `execution.strict_parity`: cuando esta en `true`, compara mascara CPU/GPU y conserva la salida CPU para mantener resultados equivalentes al pipeline original

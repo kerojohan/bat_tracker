@@ -93,9 +93,13 @@ def _base_config() -> dict:
         "valid_region": {
             "enabled": False,
         },
+        "cave_zones": {
+            "enabled": False,
+        },
         "output": {
             "progress_enabled": False,
             "export_track_clips": False,
+            "cleanup_intermediate_outputs": False,
         },
     }
 

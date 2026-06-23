@@ -121,6 +121,23 @@ def _classify_track_direction_full(
         if any(not _point_in_mask_xy(point.x, point.y, mask) for point in track_points[1:-1]):
             return "exit"
     if direction == "outside":
+        inside_midpoints = [point for point in track_points[1:-1] if _point_in_mask_xy(point.x, point.y, mask)]
+        if inside_midpoints:
+            ys, xs = np.nonzero(mask > 0)
+            if xs.size > 0:
+                cx = float(np.mean(xs))
+                cy = float(np.mean(ys))
+                start_vec = (start.x - cx, start.y - cy)
+                end_vec = (end.x - cx, end.y - cy)
+                if start_vec[0] * end_vec[0] + start_vec[1] * end_vec[1] > 0.0:
+                    return "outside"
+                start_dist = float(np.hypot(start.x - cx, start.y - cy))
+                end_dist = float(np.hypot(end.x - cx, end.y - cy))
+                if end_dist < start_dist * 0.92:
+                    return "entry"
+                if start_dist < end_dist * 0.92:
+                    return "exit"
+            return "inside"
         return _infer_outside_direction_from_motion(start, end, height)
     return direction
 
@@ -167,6 +184,10 @@ def build_tracks_render_payload(
         }
 
     effective_direction_mask = direction_mask if direction_mask is not None else valid_region_mask
+    if direction_mask is not None:
+        payload["entry_exit_region"] = {
+            "contours": _mask_contours_payload(direction_mask),
+        }
     tracks_payload: List[Dict[str, Any]] = []
     for track_id in sorted(by_track):
         track_points = sorted(by_track[track_id], key=lambda p: p.frame)
@@ -268,6 +289,8 @@ def export_tracks_svg(
         "stroke-linejoin: round; dominant-baseline: alphabetic; }\n"
         ".valid-region path { fill: rgba(0, 255, 0, 0.12); stroke: #00ffaa; stroke-width: 1.5; "
         "vector-effect: non-scaling-stroke; }\n"
+        ".entry-exit-region path { fill: rgba(255, 210, 0, 0.14); stroke: #ffd200; stroke-width: 1.8; "
+        "vector-effect: non-scaling-stroke; }\n"
     )
 
     valid_region = payload.get("valid_region", {})
@@ -288,6 +311,28 @@ def export_tracks_svg(
                 "path",
                 {
                     "id": f"valid-region-contour-{idx}",
+                    "d": " ".join(commands),
+                },
+            )
+
+    entry_exit_region = payload.get("entry_exit_region", {})
+    entry_exit_contours = entry_exit_region.get("contours", []) if isinstance(entry_exit_region, dict) else []
+    if entry_exit_contours:
+        entry_exit_group = ET.SubElement(svg, "g", {"id": "entry-exit-region", "class": "entry-exit-region"})
+        entry_exit_title = ET.SubElement(entry_exit_group, "title")
+        entry_exit_title.text = "Entry/exit region"
+        for idx, contour in enumerate(entry_exit_contours):
+            if not contour:
+                continue
+            commands = [f"M {_svg_number(contour[0]['x'])} {_svg_number(contour[0]['y'])}"]
+            for point in contour[1:]:
+                commands.append(f"L {_svg_number(point['x'])} {_svg_number(point['y'])}")
+            commands.append("Z")
+            ET.SubElement(
+                entry_exit_group,
+                "path",
+                {
+                    "id": f"entry-exit-region-contour-{idx}",
                     "d": " ".join(commands),
                 },
             )

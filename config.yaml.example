@@ -61,6 +61,7 @@ tracking:
   min_track_path_length: 18.0
   min_track_straightness: 0.0
   require_start_or_end_in_valid_region: false
+  entry_exit_zone_source: cave_zones # cave_zones | valid_region
   valid_region_mode: annotate   # annotate | gate (annotate: la region solo etiqueta; gate: descarta tracks fuera)
   valid_region_gate_dilate_px: 0
   auto_merge_suggested: false
@@ -108,6 +109,21 @@ valid_region:
   bottom_contour_deepest_strong_ratio: 0.70
   output_subdir: valid_region
 
+cave_zones:
+  enabled: true
+  method: hybrid                 # hybrid | annotation | motion | dark
+  input_mask: ""                 # mascara binaria de zona entrada/salida; tiene prioridad
+  input_annotation: ""           # overlay rojo manual; solo se usa si se configura explicitamente
+  use_motion_heatmap: true
+  use_dark_regions: true
+  min_component_area_ratio: 0.002
+  max_components: 3
+  dilate_px: 8
+  motion_percentile: 94.0
+  dark_percentile: 18.0
+  motion_dark_connect_dilate_px: 18
+  output_subdir: cave_zones
+
 flight_trails:
   enabled: false
   video_filename: flight_trails_overlay.mp4
@@ -142,3 +158,4 @@ output:
   export_track_clips: false
   track_clips_subdir: track_clips
   track_clips_padding_frames: 0
+  cleanup_intermediate_outputs: true
