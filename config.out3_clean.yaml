@@ -35,6 +35,10 @@ secondary_detection:
   kinetic_dedupe_max_overlap_distance_px: 45.0
   kinetic_dedupe_min_overlap_frames: 4
   kinetic_dedupe_min_overlap_ratio: 0.6
+  kinetic_temporal_burst_min_points_per_frame: 32
+  kinetic_temporal_burst_window_frames: 10
+  kinetic_temporal_burst_trigger_frames: 3
+  kinetic_temporal_burst_cooldown_frames: 24
 tracking:
   tracker: kalman
   kalman_sigma_acc: 3.0

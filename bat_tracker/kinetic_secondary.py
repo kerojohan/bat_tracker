@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 from argparse import Namespace
-from collections import defaultdict
+from collections import Counter, defaultdict
 from math import hypot
 from pathlib import Path
 from types import ModuleType
@@ -218,9 +218,105 @@ def dedupe_secondary_track_points(
     }
 
 
+def suppress_temporal_burst_track_points(
+    points: Iterable[TrackPoint],
+    *,
+    min_points_per_frame: int,
+    window_frames: int,
+    trigger_frames: int,
+    cooldown_frames: int,
+) -> tuple[list[TrackPoint], dict]:
+    """Drop secondary tracks that cross non-physical high-density bursts."""
+    point_list = list(points)
+    min_points_per_frame = int(min_points_per_frame)
+    window_frames = int(window_frames)
+    trigger_frames = int(trigger_frames)
+    cooldown_frames = int(cooldown_frames)
+    if (
+        min_points_per_frame <= 0
+        or window_frames <= 0
+        or trigger_frames <= 0
+        or not point_list
+    ):
+        return point_list, {
+            "temporal_burst_suppression_enabled": False,
+            "temporal_burst_frames": 0,
+            "temporal_burst_tracks_removed": 0,
+            "temporal_burst_points_removed": 0,
+        }
+
+    frame_counts = Counter(point.frame for point in point_list)
+    high_frames = {frame for frame, count in frame_counts.items() if count >= min_points_per_frame}
+    if not high_frames:
+        return point_list, {
+            "temporal_burst_suppression_enabled": True,
+            "temporal_burst_frames": 0,
+            "temporal_burst_tracks_removed": 0,
+            "temporal_burst_points_removed": 0,
+            "temporal_burst_high_frames": [],
+        }
+
+    frames = range(min(frame_counts), max(frame_counts) + 1)
+    suppression_frames: set[int] = set()
+    recent_high: list[int] = []
+    for frame in frames:
+        min_allowed = frame - window_frames + 1
+        recent_high = [recent for recent in recent_high if recent >= min_allowed]
+        if frame in high_frames:
+            recent_high.append(frame)
+        if len(recent_high) >= trigger_frames:
+            start = recent_high[0]
+            end = frame + max(0, cooldown_frames)
+            suppression_frames.update(range(start, end + 1))
+
+    if not suppression_frames:
+        return point_list, {
+            "temporal_burst_suppression_enabled": True,
+            "temporal_burst_frames": 0,
+            "temporal_burst_tracks_removed": 0,
+            "temporal_burst_points_removed": 0,
+            "temporal_burst_high_frames": sorted(high_frames),
+        }
+
+    by_track = _points_by_track(point_list)
+    removed_track_ids = {
+        track_id
+        for track_id, track in by_track.items()
+        if any(point.frame in suppression_frames for point in track)
+    }
+    kept = [point for point in point_list if point.track_id not in removed_track_ids]
+    removed_points = len(point_list) - len(kept)
+    return kept, {
+        "temporal_burst_suppression_enabled": True,
+        "temporal_burst_min_points_per_frame": min_points_per_frame,
+        "temporal_burst_window_frames": window_frames,
+        "temporal_burst_trigger_frames": trigger_frames,
+        "temporal_burst_cooldown_frames": cooldown_frames,
+        "temporal_burst_high_frames": sorted(high_frames),
+        "temporal_burst_frames": len(suppression_frames),
+        "temporal_burst_frame_start": min(suppression_frames),
+        "temporal_burst_frame_end": max(suppression_frames),
+        "temporal_burst_tracks_removed": len(removed_track_ids),
+        "temporal_burst_removed_track_ids": sorted(removed_track_ids),
+        "temporal_burst_points_removed": removed_points,
+    }
+
+
 def _build_args(video_path: str, cfg: dict) -> Namespace:
     values = dict(KINETIC_DEFAULTS)
     values["video"] = video_path
+    wrapper_control_keys = {
+        "enabled",
+        "inherit_primary",
+        "algorithm",
+        "script_path",
+        "dedupe_max_distance_px",
+        "dedupe_min_iou",
+        "kinetic_temporal_burst_min_points_per_frame",
+        "kinetic_temporal_burst_window_frames",
+        "kinetic_temporal_burst_trigger_frames",
+        "kinetic_temporal_burst_cooldown_frames",
+    }
     aliases = {
         "morph_close_iters": "morph_close_iters",
         "morph_open_iters": "morph_open_iters",
@@ -228,7 +324,7 @@ def _build_args(video_path: str, cfg: dict) -> Namespace:
         "auto_calibrate": "auto_calibrate",
     }
     for key, value in cfg.items():
-        if key in {"enabled", "inherit_primary", "algorithm", "script_path", "dedupe_max_distance_px", "dedupe_min_iou"}:
+        if key in wrapper_control_keys:
             continue
         if key.startswith("kinetic_"):
             values[key.removeprefix("kinetic_")] = value

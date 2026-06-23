@@ -36,6 +36,7 @@ from .heatmap_events import write_heatmap_tracks_csv
 from .kalman_tracker import KalmanTracker
 from .kinetic_secondary import dedupe_secondary_track_points
 from .kinetic_secondary import run_kinetic_secondary_tracks
+from .kinetic_secondary import suppress_temporal_burst_track_points
 from .perf import PerformanceCollector
 from .render import export_tracks_render_json, export_tracks_svg, render_detections_overlay, render_tracks_overlay
 from .track_quality import compute_track_quality
@@ -2608,6 +2609,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     secondary_kinetic_meta: Dict = {"enabled": secondary_kinetic_enabled}
     secondary_kinetic_dedupe_meta: Dict = {}
     secondary_kinetic_mask_meta: Dict = {}
+    secondary_kinetic_burst_meta: Dict = {}
     if secondary_kinetic_enabled:
         secondary_kinetic_points, secondary_kinetic_meta = run_kinetic_secondary_tracks(
             input_video,
@@ -2618,6 +2620,15 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         secondary_kinetic_points, secondary_kinetic_mask_meta = _filter_points_start_or_end_in_mask(
             secondary_kinetic_points,
             entry_exit_mask,
+        )
+        secondary_kinetic_points, secondary_kinetic_burst_meta = suppress_temporal_burst_track_points(
+            secondary_kinetic_points,
+            min_points_per_frame=int(
+                secondary_detection_cfg.get("kinetic_temporal_burst_min_points_per_frame", 0)
+            ),
+            window_frames=int(secondary_detection_cfg.get("kinetic_temporal_burst_window_frames", 0)),
+            trigger_frames=int(secondary_detection_cfg.get("kinetic_temporal_burst_trigger_frames", 0)),
+            cooldown_frames=int(secondary_detection_cfg.get("kinetic_temporal_burst_cooldown_frames", 0)),
         )
         max_primary_track_id = max((point.track_id for point in filtered_points), default=0)
         secondary_kinetic_added_points, secondary_kinetic_dedupe_meta = dedupe_secondary_track_points(
@@ -3075,6 +3086,9 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
             "secondary_kinetic_tracks_rejected_by_mask": int(
                 secondary_kinetic_mask_meta.get("tracks_rejected_by_mask_filter", 0)
             ),
+            "secondary_kinetic_temporal_burst_tracks_removed": int(
+                secondary_kinetic_burst_meta.get("temporal_burst_tracks_removed", 0)
+            ),
             **background_runtime_stats,
             **detection_runtime_stats,
             **secondary_detection_runtime_stats,
@@ -3121,6 +3135,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         "secondary_kinetic": {
             **secondary_kinetic_meta,
             **secondary_kinetic_mask_meta,
+            **secondary_kinetic_burst_meta,
             **secondary_kinetic_dedupe_meta,
         },
         "fast_events": {
