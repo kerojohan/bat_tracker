@@ -536,16 +536,6 @@ def _save_motion_heatmap_overlay(
     out *= 1.0 - alpha
     out += colored.astype(np.float32) * alpha
     overlay = np.clip(out, 0.0, 255.0).astype(np.uint8)
-    cv2.putText(
-        overlay,
-        "motion heatmap",
-        (10, 26),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        0.65,
-        (255, 255, 255),
-        2,
-        cv2.LINE_AA,
-    )
     cv2.imwrite(str(output_path), overlay)
 
 

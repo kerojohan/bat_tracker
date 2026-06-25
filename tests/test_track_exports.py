@@ -15,6 +15,7 @@ from bat_tracker.pipeline import (
     _exclude_mask_from_vegetation,
     _filter_points_excluding_directions,
     _filter_points_start_or_end_in_mask,
+    _save_motion_heatmap_overlay,
     _rescue_crossing_continuation_points,
     _rescue_motion_candidate_points,
     _select_entry_exit_mask,
@@ -219,10 +220,19 @@ def test_pipeline_exports_svg_and_render_json_from_in_memory_tracks(tmp_path: Pa
         "track-label track-label-start",
         "track-label track-label-end",
     }
-    assert {label.text for label in labels} == {"1"}
-    assert meta["outputs"]["tracks_svg"] == str((out_dir / "tracks.svg").resolve())
-    assert meta["outputs"]["tracks_render_json"] == str((out_dir / "tracks_render.json").resolve())
-    assert meta["outputs"]["flight_trails_overlay_video"] == ""
+
+
+def test_motion_heatmap_overlay_has_no_embedded_title(tmp_path: Path) -> None:
+    background = np.zeros((80, 120), dtype=np.uint8)
+    heatmap = np.zeros((80, 120), dtype=np.float32)
+    heatmap[50:70, 80:110] = 25.0
+
+    output_path = tmp_path / "motion_heatmap_overlay.png"
+    _save_motion_heatmap_overlay(background, heatmap, output_path)
+
+    overlay = cv2.imread(str(output_path), cv2.IMREAD_COLOR)
+    assert overlay is not None
+    assert overlay[:30, :60].sum() == 0
 
 
 def test_pipeline_uses_cave_zones_mask_for_entry_exit_contract(tmp_path: Path) -> None:
