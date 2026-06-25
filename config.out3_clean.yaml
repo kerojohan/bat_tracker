@@ -82,7 +82,7 @@ tracking:
   rescue_motion_min_points: 3
   rescue_motion_min_displacement: 18.0
   rescue_motion_min_path_length: 24.0
-  rescue_motion_min_mean_speed: 120.0
+  rescue_motion_min_mean_speed: 60.0
   rescue_motion_min_straightness: 0.0
   rescue_motion_interaction_dilate_px: 0
   export_track_candidates: true

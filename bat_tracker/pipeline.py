@@ -1242,7 +1242,7 @@ def _filter_track_points(
             s_in = _point_in_mask(start, gate_mask)
             e_in = _point_in_mask(end, gate_mask)
             direction = _classify_direction_full(s_in, e_in, track_points, gate_mask, gate_mask.shape[:2])
-            if not (s_in or e_in):
+            if not (s_in or e_in) and direction == "outside":
                 reject_reasons.append("valid_region_gate")
         elif direction_mask is not None:
             s_in = _point_in_mask(start, direction_mask)
