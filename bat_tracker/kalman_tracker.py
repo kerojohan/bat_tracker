@@ -136,6 +136,7 @@ class KalmanTracker:
         self._active: Dict[int, _KalmanTrack] = {}
         self._pending: List[_PendingDetection] = []
         self._pending_min_distance = self.max_distance * 0.7
+        self._blob_split_distance = min(120.0, self.max_distance * 0.8)
 
     def _new_track(
         self,
@@ -288,6 +289,11 @@ class KalmanTracker:
         pending_min_frame = frame_idx - 2
         self._pending = [p for p in self._pending if p.frame_idx >= pending_min_frame]
 
+        confirmed_positions: List[Tuple[float, float]] = []
+        for track_id, _det_idx in matched:
+            track = self._active[track_id]
+            confirmed_positions.append((float(track.mean[0]), float(track.mean[1])))
+
         remaining_unmatched: List[Tuple[int, Detection]] = []
         for det_idx, det in unmatched_dets:
             best_pending: _PendingDetection | None = None
@@ -309,11 +315,22 @@ class KalmanTracker:
                 track.last_det = det
                 points.append(self._emit_point(track, frame_idx, det))
                 self._pending.remove(best_pending)
+                confirmed_positions.append((det.x, det.y))
             else:
                 remaining_unmatched.append((det_idx, det))
 
-        # Añadir a pending las detecciones que no pudieron emparejarse.
+        # Descartar detecciones sobrantes que estén muy cerca de una confirmada (blob splits).
+        filtered_remaining: List[Tuple[int, Detection]] = []
         for det_idx, det in remaining_unmatched:
+            too_close = any(
+                ((cx - det.x) ** 2 + (cy - det.y) ** 2) ** 0.5 < self._blob_split_distance
+                for cx, cy in confirmed_positions
+            )
+            if not too_close:
+                filtered_remaining.append((det_idx, det))
+
+        # Añadir a pending las detecciones que no pudieron emparejarse.
+        for det_idx, det in filtered_remaining:
             tid = self._next_track_id
             self._next_track_id += 1
             self._pending.append(_PendingDetection(det=det, frame_idx=frame_idx, track_id=tid))
