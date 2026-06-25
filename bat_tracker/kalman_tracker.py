@@ -34,6 +34,15 @@ from .detection import Detection
 from .tracker import TrackPoint
 
 
+@dataclass
+class _PendingDetection:
+    """Detectción no emparejada que espera 1 frame para confirmación de velocidad."""
+
+    det: Detection
+    frame_idx: int
+    track_id: int
+
+
 def _build_constant_velocity_matrices(
     sigma_acc: float,
     measurement_std: float,
@@ -125,11 +134,19 @@ class KalmanTracker:
 
         self._next_track_id = 1
         self._active: Dict[int, _KalmanTrack] = {}
+        self._pending: List[_PendingDetection] = []
+        self._pending_min_distance = self.max_distance * 0.7
 
-    def _new_track(self, frame_idx: int, det: Detection) -> _KalmanTrack:
+    def _new_track(
+        self,
+        frame_idx: int,
+        det: Detection,
+        vx: float = 0.0,
+        vy: float = 0.0,
+    ) -> _KalmanTrack:
         track_id = self._next_track_id
         self._next_track_id += 1
-        mean = np.array([det.x, det.y, 0.0, 0.0], dtype=np.float64)
+        mean = np.array([det.x, det.y, vx, vy], dtype=np.float64)
         cov = np.diag(
             [self._pos_var0, self._pos_var0, self._vel_var0, self._vel_var0]
         ).astype(np.float64)
@@ -261,11 +278,44 @@ class KalmanTracker:
         for track_id in to_delete:
             del self._active[track_id]
 
-        # 7. Detecciones fuertes no emparejadas: nacen tracks nuevos.
-        for det_idx in high_idxs:
-            if det_idx in matched_high:
-                continue
-            track = self._new_track(frame_idx, detections[det_idx])
-            points.append(self._emit_point(track, frame_idx, detections[det_idx]))
+        # 7. Detecciones fuertes no emparejadas: intentar confirmar con pending.
+        unmatched_dets = [
+            (det_idx, detections[det_idx])
+            for det_idx in high_idxs
+            if det_idx not in matched_high
+        ]
+        # Limpiar pending de frames viejos (más de 2 frames atrás).
+        pending_min_frame = frame_idx - 2
+        self._pending = [p for p in self._pending if p.frame_idx >= pending_min_frame]
+
+        remaining_unmatched: List[Tuple[int, Detection]] = []
+        for det_idx, det in unmatched_dets:
+            best_pending: _PendingDetection | None = None
+            best_dist = float("inf")
+            for p in self._pending:
+                d = ((p.det.x - det.x) ** 2 + (p.det.y - det.y) ** 2) ** 0.5
+                if d < self._pending_min_distance and d < best_dist:
+                    best_dist = d
+                    best_pending = p
+            if best_pending is not None:
+                dt = max(1, frame_idx - best_pending.frame_idx)
+                vx = (det.x - best_pending.det.x) / dt
+                vy = (det.y - best_pending.det.y) / dt
+                track = self._new_track(best_pending.frame_idx, best_pending.det, vx=vx, vy=vy)
+                points.append(self._emit_point(track, best_pending.frame_idx, best_pending.det))
+                track.update(np.array([det.x, det.y], dtype=np.float64), self.H, self.R)
+                track.last_frame = frame_idx
+                track.missed = 0
+                track.last_det = det
+                points.append(self._emit_point(track, frame_idx, det))
+                self._pending.remove(best_pending)
+            else:
+                remaining_unmatched.append((det_idx, det))
+
+        # Añadir a pending las detecciones que no pudieron emparejarse.
+        for det_idx, det in remaining_unmatched:
+            tid = self._next_track_id
+            self._next_track_id += 1
+            self._pending.append(_PendingDetection(det=det, frame_idx=frame_idx, track_id=tid))
 
         return points

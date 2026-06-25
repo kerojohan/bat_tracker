@@ -41,7 +41,7 @@ secondary_detection:
   kinetic_temporal_burst_cooldown_frames: 24
 tracking:
   tracker: kalman
-  kalman_sigma_acc: 3.0
+  kalman_sigma_acc: 6.0
   kalman_measurement_std: 2.0
   kalman_high_area_threshold: 0.0
   max_distance: 150.0
@@ -51,7 +51,7 @@ tracking:
   min_track_displacement: 12.0
   min_track_path_length: 18.0
   min_track_straightness: 0.0
-  require_start_or_end_in_valid_region: true
+  require_start_or_end_in_valid_region: false
   entry_exit_zone_source: auto
   valid_region_mode: gate
   valid_region_gate_dilate_px: 0
@@ -195,7 +195,7 @@ output:
   trajectory_smoothing_window: 5
   cleanup_intermediate_outputs: true
 flight_trails:
-  enabled: false
+  enabled: true
   video_filename: flight_trails_overlay.mp4
   history_frames: 12
   max_track_gap_frames: 2
