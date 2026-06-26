@@ -26,7 +26,7 @@ detection:
   temporal_burst_trigger_frames: 3
   temporal_burst_cooldown_frames: 24
 secondary_detection:
-  enabled: true
+  enabled: false
   algorithm: kinetic
   inherit_primary: true
   auto_calibrate: true
@@ -94,7 +94,7 @@ valid_region:
   apply_to_detection: false
   hybrid_combine_mode: and
   input_image: ''
-  input_mask: ''
+  input_mask: 'mask_session42.png'
   context_start_sec: 0.0
   context_duration_sec: 75.0
   blur_kernel_size: 151
