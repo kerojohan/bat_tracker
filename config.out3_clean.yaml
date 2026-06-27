@@ -51,6 +51,10 @@ tracking:
   min_track_displacement: 12.0
   min_track_path_length: 18.0
   min_track_straightness: 0.0
+  static_noise_filter_enabled: true
+  static_noise_min_duration_sec: 3.0
+  static_noise_max_mean_speed_ratio_per_sec: 0.025
+  static_noise_max_displacement_ratio_per_sec: 0.020
   require_start_or_end_in_valid_region: false
   entry_exit_zone_source: auto
   valid_region_mode: gate
