@@ -99,6 +99,22 @@ def _speed_similarity(speed_a: float, speed_b: float) -> float:
     return _clip01(lo / hi)
 
 
+def _scale_linear_px_for_resolution(
+    value_px: float,
+    cfg: dict,
+    frame_size: tuple[int, int] | None,
+) -> float:
+    if frame_size is None or not bool(cfg.get("auto_scale_with_resolution", True)):
+        return float(value_px)
+
+    width, height = frame_size
+    ref_w = max(1, int(cfg.get("reference_width", 1024)))
+    ref_h = max(1, int(cfg.get("reference_height", 576)))
+    ref_diag = max(1.0, hypot(float(ref_w), float(ref_h)))
+    target_diag = max(1.0, hypot(float(max(1, width)), float(max(1, height))))
+    return float(value_px) * target_diag / ref_diag
+
+
 def _points_by_track(points: Iterable[TrackPoint]) -> dict[int, list[TrackPoint]]:
     by_track: dict[int, list[TrackPoint]] = defaultdict(list)
     for point in points:
@@ -299,9 +315,17 @@ def _copy_point(point: TrackPoint, track_id: int) -> TrackPoint:
 def deduplicate_track_points(
     points: list[TrackPoint],
     cfg: dict,
+    frame_size: tuple[int, int] | None = None,
 ) -> TrackDuplicateResult:
     if not bool(cfg.get("enable_track_deduplication", False)):
         return TrackDuplicateResult(points=points, rows=[], pairs=[], enabled=False, groups_total=0, pairs_total=0, tracks_discarded=0, tracks_merged=0)
+
+    cfg = dict(cfg)
+    cfg["max_spatial_distance_px"] = _scale_linear_px_for_resolution(
+        float(cfg.get("max_spatial_distance_px", 16.0)),
+        cfg,
+        frame_size,
+    )
 
     by_track = _points_by_track(points)
     if len(by_track) < 2:

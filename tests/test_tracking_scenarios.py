@@ -14,6 +14,7 @@ individualizada por murciélago.
 
 from __future__ import annotations
 
+import math
 from typing import Dict, List
 
 import numpy as np
@@ -311,6 +312,60 @@ def test_static_noise_filter_rejects_sustained_slow_blob_but_keeps_active_track(
     assert {p.track_id for p in kept_active} == {2}
     assert assess_active[0]["accepted"] is True
     assert "static_noise" not in assess_active[0]["reject_reasons"]
+
+
+def test_temporal_gap_filter_rejects_stitched_fragments_but_keeps_dense_track() -> None:
+    valid_mask = np.ones((720, 1280), dtype=np.uint8) * 255
+    cfg = _filter_cfg("annotate")
+    cfg.update({"min_track_displacement": 0.0, "max_track_internal_gap_frames": 45})
+
+    # Fragmentos cosidos: vuelo corto + rafaga lejana separados por un hueco enorme.
+    stitched = [_point(1, f, 1050.0 + 12.0 * f, 120.0) for f in range(13)]
+    stitched += [_point(1, 1176 + f, 800.0 + 20.0 * f, 110.0) for f in range(10)]
+    kept_stitched, assess_stitched = _filter_track_points(stitched, cfg, FPS, valid_mask=valid_mask)
+
+    assert kept_stitched == []
+    assert assess_stitched[0]["accepted"] is False
+    assert "temporal_gap" in assess_stitched[0]["reject_reasons"]
+
+    # Track denso (huecos pequenos, dentro de la tolerancia): se conserva.
+    dense = [_point(2, f, 200.0 + 15.0 * f, 360.0) for f in range(40)]
+    kept_dense, assess_dense = _filter_track_points(dense, cfg, FPS, valid_mask=valid_mask)
+
+    assert {p.track_id for p in kept_dense} == {2}
+    assert "temporal_gap" not in assess_dense[0]["reject_reasons"]
+
+
+def test_loiter_filter_rejects_long_confined_track_but_keeps_long_transit() -> None:
+    valid_mask = np.ones((720, 1280), dtype=np.uint8) * 255
+    cfg = _filter_cfg("annotate")
+    cfg.update(
+        {
+            "min_track_displacement": 0.0,
+            "min_track_path_length": 0.0,
+            "loiter_filter_enabled": True,
+            "loiter_min_duration_sec": 10.0,
+            "loiter_min_displacement_ratio": 0.20,
+        }
+    )
+
+    # Merodeo: 12 s dando vueltas en una zona pequena (mucho recorrido, avance neto minimo).
+    loiter: List[TrackPoint] = []
+    for f in range(300):
+        angle = f * 0.5
+        loiter.append(_point(1, f, 640.0 + 30.0 * math.cos(angle), 360.0 + 30.0 * math.sin(angle)))
+    kept_loiter, assess_loiter = _filter_track_points(loiter, cfg, FPS, valid_mask=valid_mask)
+
+    assert kept_loiter == []
+    assert assess_loiter[0]["accepted"] is False
+    assert "loiter" in assess_loiter[0]["reject_reasons"]
+
+    # Transito largo real: cruza casi toda la escena en 12 s (avance neto grande).
+    transit = [_point(2, f, 100.0 + 3.6 * f, 200.0 + 1.5 * f) for f in range(300)]
+    kept_transit, assess_transit = _filter_track_points(transit, cfg, FPS, valid_mask=valid_mask)
+
+    assert {p.track_id for p in kept_transit} == {2}
+    assert "loiter" not in assess_transit[0]["reject_reasons"]
 
 
 def test_valid_region_require_start_or_end_rejects_out_of_gate_track_in_any_mode() -> None:

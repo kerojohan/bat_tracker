@@ -927,9 +927,28 @@ def _point_in_mask(point: TrackPoint, mask: np.ndarray) -> bool:
     return bool(mask[yi, xi] > 0)
 
 
-def _build_valid_region_gate_mask(valid_mask: np.ndarray | None, tracking_cfg: Dict) -> np.ndarray | None:
+def _build_valid_region_gate_mask(
+    valid_mask: np.ndarray | None,
+    tracking_cfg: Dict,
+    frame_size: tuple[int, int] | None = None,
+) -> np.ndarray | None:
     gate_mask = valid_mask
-    valid_region_gate_dilate_px = max(0, int(tracking_cfg.get("valid_region_gate_dilate_px", 0)))
+    if frame_size is None and gate_mask is not None:
+        frame_size = (int(gate_mask.shape[1]), int(gate_mask.shape[0]))
+    valid_region_gate_dilate_px = max(
+        0,
+        int(
+            round(
+                _scale_linear_px_for_resolution(
+                    float(tracking_cfg.get("valid_region_gate_dilate_px", 0)),
+                    tracking_cfg,
+                    frame_size,
+                    reference_width_key="reference_width",
+                    reference_height_key="reference_height",
+                )
+            )
+        ),
+    )
     if gate_mask is not None and valid_region_gate_dilate_px > 0:
         k = 2 * valid_region_gate_dilate_px + 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
@@ -1083,13 +1102,17 @@ def _filter_track_points(
     min_track_duration_sec = float(tracking_cfg.get("min_track_duration_sec", 0.0))
     min_track_length_from_sec = int(ceil(max(0.0, min_track_duration_sec) * max(1e-6, fps)))
     min_track_length = max(min_track_length_cfg, min_track_length_from_sec)
-    min_track_displacement = float(tracking_cfg.get("min_track_displacement", 0.0))
-    min_track_path_length = float(tracking_cfg.get("min_track_path_length", 0.0))
+    min_track_displacement_cfg = float(tracking_cfg.get("min_track_displacement", 0.0))
+    min_track_path_length_cfg = float(tracking_cfg.get("min_track_path_length", 0.0))
     min_track_straightness = float(tracking_cfg.get("min_track_straightness", 0.0))
     static_noise_filter_enabled = bool(tracking_cfg.get("static_noise_filter_enabled", False))
     static_noise_min_duration_sec = max(0.0, float(tracking_cfg.get("static_noise_min_duration_sec", 3.0)))
     static_noise_max_mean_speed_ratio = max(0.0, float(tracking_cfg.get("static_noise_max_mean_speed_ratio_per_sec", 0.0)))
     static_noise_max_displacement_ratio = max(0.0, float(tracking_cfg.get("static_noise_max_displacement_ratio_per_sec", 0.0)))
+    max_track_internal_gap_frames = max(0, int(tracking_cfg.get("max_track_internal_gap_frames", 0)))
+    loiter_filter_enabled = bool(tracking_cfg.get("loiter_filter_enabled", False))
+    loiter_min_duration_sec = max(0.0, float(tracking_cfg.get("loiter_min_duration_sec", 10.0)))
+    loiter_min_displacement_ratio = max(0.0, float(tracking_cfg.get("loiter_min_displacement_ratio", 0.0)))
     require_start_or_end_in_valid_region = bool(tracking_cfg.get("require_start_or_end_in_valid_region", False))
     # Compat v1.1.11: si require_start_or_end_in_valid_region=true, el track
     # debe tocar la máscara (inicio o fin) independientemente de valid_region_mode.
@@ -1110,6 +1133,21 @@ def _filter_track_points(
         frame_w = int(max(2.0, max_x + 1.0))
         frame_h = int(max(2.0, max_y + 1.0))
     frame_diag = max(1.0, hypot(float(frame_w), float(frame_h)))
+    frame_size = (int(frame_w), int(frame_h))
+    min_track_displacement = _scale_linear_px_for_resolution(
+        min_track_displacement_cfg,
+        tracking_cfg,
+        frame_size,
+        reference_width_key="reference_width",
+        reference_height_key="reference_height",
+    )
+    min_track_path_length = _scale_linear_px_for_resolution(
+        min_track_path_length_cfg,
+        tracking_cfg,
+        frame_size,
+        reference_width_key="reference_width",
+        reference_height_key="reference_height",
+    )
     # Detector de "blob estàtic": descarta soroll fix de llarga durada (reflexos, punts
     # calents, vegetació quasi immòbil) que un tracker manté viu i que acumula
     # desplaçament per salts esporàdics. Tots els llindars escalen amb la diagonal del
@@ -1256,6 +1294,34 @@ def _filter_track_points(
             displacement_rate = displacement / duration if duration > 0.0 else 0.0
             if mean_speed < static_noise_max_mean_speed and displacement_rate < static_noise_max_displacement_rate:
                 reject_reasons.append("static_noise")
+        # Discontinuïtat temporal: un track real és temporalment dens (els forats
+        # entre deteccions consecutives no superen max_missed ni la tolerància de
+        # merge). Un forat intern molt gran delata que s'han cosit fragments no
+        # relacionats (vol curt + punt fix d'una cantonada + ràfega de soroll) sota
+        # un mateix id, cosa que infla path_length i burla els altres filtres.
+        if max_track_internal_gap_frames > 0 and len(track_points) >= 2:
+            max_internal_gap = max(
+                track_points[i].frame - track_points[i - 1].frame
+                for i in range(1, len(track_points))
+            )
+            if max_internal_gap > max_track_internal_gap_frames:
+                reject_reasons.append("temporal_gap")
+        # Merodeo: el vol d'un ratpenat sortint de la cova és un trànsit ràpid que
+        # creua l'escena; no s'hi està molts segons. Un track de llarga durada que
+        # NO transita (avanç net petit respecte a la mida del frame, encara que
+        # acumuli molt recorregut donant voltes) no correspon a aquest comportament
+        # i sol ser soroll persistent (insecte prop de l'òptica, reflex mòbil, etc.).
+        # El llindar de desplaçament és una fracció de la diagonal, així que escala
+        # amb la resolució del vídeo.
+        if (
+            loiter_filter_enabled
+            and loiter_min_duration_sec > 0.0
+            and loiter_min_displacement_ratio > 0.0
+            and duration >= loiter_min_duration_sec
+        ):
+            displacement_ratio = displacement / frame_diag if frame_diag > 0.0 else 0.0
+            if displacement_ratio < loiter_min_displacement_ratio:
+                reject_reasons.append("loiter")
 
         s_in = None
         e_in = None
@@ -1328,7 +1394,11 @@ def _track_edge_vectors(points: List[TrackPoint]) -> tuple[tuple[float, float], 
     return start_vec, end_vec
 
 
-def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tuple[List[TrackPoint], List[Dict]]:
+def _auto_merge_track_points(
+    points: List[TrackPoint],
+    tracking_cfg: Dict,
+    frame_size: tuple[int, int] | None = None,
+) -> tuple[List[TrackPoint], List[Dict]]:
     if not bool(tracking_cfg.get("auto_merge_suggested", False)):
         return points, []
 
@@ -1342,12 +1412,30 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
         return points, []
 
     max_gap = int(tracking_cfg.get("merge_max_gap_frames", 8))
-    max_endpoint_dist = float(tracking_cfg.get("merge_max_endpoint_distance", 80.0))
+    max_endpoint_dist = _scale_linear_px_for_resolution(
+        float(tracking_cfg.get("merge_max_endpoint_distance", 80.0)),
+        tracking_cfg,
+        frame_size,
+        reference_width_key="reference_width",
+        reference_height_key="reference_height",
+    )
     min_overlap_common = int(tracking_cfg.get("merge_overlap_min_common_frames", 3))
-    max_overlap_mean_dist = float(tracking_cfg.get("merge_overlap_max_mean_distance", 60.0))
+    max_overlap_mean_dist = _scale_linear_px_for_resolution(
+        float(tracking_cfg.get("merge_overlap_max_mean_distance", 60.0)),
+        tracking_cfg,
+        frame_size,
+        reference_width_key="reference_width",
+        reference_height_key="reference_height",
+    )
     min_overlap_cos = float(tracking_cfg.get("merge_overlap_min_direction_cosine", 0.8))
     local_overlap_min_cos = max(0.65, min_overlap_cos - 0.15)
-    proximity_override_dist = float(tracking_cfg.get("merge_overlap_proximity_override_distance", 0.0))
+    proximity_override_dist = _scale_linear_px_for_resolution(
+        float(tracking_cfg.get("merge_overlap_proximity_override_distance", 0.0)),
+        tracking_cfg,
+        frame_size,
+        reference_width_key="reference_width",
+        reference_height_key="reference_height",
+    )
     # Guardas anti-transitividad / anti-coexistencia:
     # - max_group_overlap_frames: dos grupos no pueden fusionarse si comparten
     #   demasiados frames (murcielagos distintos que vuelan en paralelo por el
@@ -1356,7 +1444,13 @@ def _auto_merge_track_points(points: List[TrackPoint], tracking_cfg: Dict) -> tu
     #   pese al solape temporal (track duplicado real).
     # - max_group_size: tope de tracks distintos por grupo fusionado.
     max_group_overlap_frames = int(tracking_cfg.get("merge_max_group_overlap_frames", 6))
-    duplicate_max_distance = float(tracking_cfg.get("merge_duplicate_max_distance", 12.0))
+    duplicate_max_distance = _scale_linear_px_for_resolution(
+        float(tracking_cfg.get("merge_duplicate_max_distance", 12.0)),
+        tracking_cfg,
+        frame_size,
+        reference_width_key="reference_width",
+        reference_height_key="reference_height",
+    )
     max_group_size = int(tracking_cfg.get("merge_max_group_size", 0))
 
     parent: Dict[int, int] = {track_id: track_id for track_id in by_track}
@@ -1897,6 +1991,7 @@ def _rescue_motion_candidate_points(
     assessments: List[dict],
     tracking_cfg: Dict,
     interaction_mask: np.ndarray | None = None,
+    frame_size: tuple[int, int] | None = None,
 ) -> tuple[List[TrackPoint], List[Dict]]:
     """Recover short, high-motion candidates rejected by spatial masks.
 
@@ -1919,11 +2014,42 @@ def _rescue_motion_candidate_points(
         if reason.strip()
     }
     min_points = max(2, int(tracking_cfg.get("rescue_motion_min_points", 3)))
-    min_displacement = float(tracking_cfg.get("rescue_motion_min_displacement", 18.0))
-    min_path_length = float(tracking_cfg.get("rescue_motion_min_path_length", 24.0))
-    min_mean_speed = float(tracking_cfg.get("rescue_motion_min_mean_speed", 120.0))
+    min_displacement = _scale_linear_px_for_resolution(
+        float(tracking_cfg.get("rescue_motion_min_displacement", 18.0)),
+        tracking_cfg,
+        frame_size,
+        reference_width_key="reference_width",
+        reference_height_key="reference_height",
+    )
+    min_path_length = _scale_linear_px_for_resolution(
+        float(tracking_cfg.get("rescue_motion_min_path_length", 24.0)),
+        tracking_cfg,
+        frame_size,
+        reference_width_key="reference_width",
+        reference_height_key="reference_height",
+    )
+    min_mean_speed = _scale_linear_px_for_resolution(
+        float(tracking_cfg.get("rescue_motion_min_mean_speed", 120.0)),
+        tracking_cfg,
+        frame_size,
+        reference_width_key="reference_width",
+        reference_height_key="reference_height",
+    )
     min_straightness = float(tracking_cfg.get("rescue_motion_min_straightness", 0.0))
-    interaction_dilate_px = max(0, int(tracking_cfg.get("rescue_motion_interaction_dilate_px", 0)))
+    interaction_dilate_px = max(
+        0,
+        int(
+            round(
+                _scale_linear_px_for_resolution(
+                    float(tracking_cfg.get("rescue_motion_interaction_dilate_px", 0)),
+                    tracking_cfg,
+                    frame_size,
+                    reference_width_key="reference_width",
+                    reference_height_key="reference_height",
+                )
+            )
+        ),
+    )
     if interaction_dilate_px > 0:
         k = 2 * interaction_dilate_px + 1
         kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
@@ -2161,10 +2287,21 @@ def _export_track_clips(
     return clip_paths
 
 
-def _build_tracker(tracking_cfg: Dict, fps: float, video_id: str):
+def _build_tracker(
+    tracking_cfg: Dict,
+    fps: float,
+    video_id: str,
+    frame_size: tuple[int, int] | None = None,
+):
     """Construye el tracker según ``tracking.tracker`` (kalman|greedy)."""
     kind = str(tracking_cfg.get("tracker", "kalman")).strip().lower()
-    max_distance = float(tracking_cfg["max_distance"])
+    max_distance = _scale_linear_px_for_resolution(
+        float(tracking_cfg["max_distance"]),
+        tracking_cfg,
+        frame_size,
+        reference_width_key="reference_width",
+        reference_height_key="reference_height",
+    )
     max_missed = int(tracking_cfg["max_missed"])
     if kind == "greedy":
         return GreedyTracker(
@@ -2394,7 +2531,12 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
                 kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
                 vegetation_mask = cv2.dilate(vegetation_mask, kernel, iterations=1)
 
-    tracker = _build_tracker(cfg["tracking"], fps=meta.fps, video_id=meta.video_id)
+    tracker = _build_tracker(
+        cfg["tracking"],
+        fps=meta.fps,
+        video_id=meta.video_id,
+        frame_size=(meta.width, meta.height),
+    )
     burst_gate = TemporalBurstGate.from_detection_cfg(cfg["detection"])
     detection_context = build_detection_context(background, cfg["detection"])
     secondary_detection_runtime_stats: Dict[str, int] = {
@@ -2583,7 +2725,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
 
     progress.start_stage("postprocess")
     postprocess_started = perf_counter()
-    merged_points, merges_applied = _auto_merge_track_points(all_points, cfg["tracking"])
+    merged_points, merges_applied = _auto_merge_track_points(
+        all_points,
+        cfg["tracking"],
+        frame_size=(meta.width, meta.height),
+    )
     filtered_points, track_assessments = _filter_track_points(
         merged_points,
         cfg["tracking"],
@@ -2606,13 +2752,18 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         track_assessments,
         cfg["tracking"],
         interaction_mask=entry_exit_mask,
+        frame_size=(meta.width, meta.height),
     )
     filtered_points, coexisting_duplicate_track_ids = _dedupe_coexisting_track_points(
         filtered_points,
         cfg["tracking"],
         frame_size=(meta.width, meta.height),
     )
-    track_dedup_result = deduplicate_track_points(filtered_points, cfg["tracking"])
+    track_dedup_result = deduplicate_track_points(
+        filtered_points,
+        cfg["tracking"],
+        frame_size=(meta.width, meta.height),
+    )
     filtered_points = track_dedup_result.points
     secondary_kinetic_points: List[TrackPoint] = []
     secondary_kinetic_added_points: List[TrackPoint] = []
