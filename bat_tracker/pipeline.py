@@ -1109,6 +1109,8 @@ def _filter_track_points(
     static_noise_min_duration_sec = max(0.0, float(tracking_cfg.get("static_noise_min_duration_sec", 3.0)))
     static_noise_max_mean_speed_ratio = max(0.0, float(tracking_cfg.get("static_noise_max_mean_speed_ratio_per_sec", 0.0)))
     static_noise_max_displacement_ratio = max(0.0, float(tracking_cfg.get("static_noise_max_displacement_ratio_per_sec", 0.0)))
+    static_noise_min_static_fraction = max(0.0, float(tracking_cfg.get("static_noise_min_static_fraction", 0.0)))
+    static_noise_static_step_ratio_per_frame = max(0.0, float(tracking_cfg.get("static_noise_static_step_ratio_per_frame", 0.0005)))
     max_track_internal_gap_frames = max(0, int(tracking_cfg.get("max_track_internal_gap_frames", 0)))
     loiter_filter_enabled = bool(tracking_cfg.get("loiter_filter_enabled", False))
     loiter_min_duration_sec = max(0.0, float(tracking_cfg.get("loiter_min_duration_sec", 10.0)))
@@ -1293,6 +1295,35 @@ def _filter_track_points(
         ):
             displacement_rate = displacement / duration if duration > 0.0 else 0.0
             if mean_speed < static_noise_max_mean_speed and displacement_rate < static_noise_max_displacement_rate:
+                reject_reasons.append("static_noise")
+        # Segon disparador del mateix artefacte: un blob fix que el tracker manté
+        # viu i que de tant en tant "teletransporta" (salts grans esporàdics) infla
+        # velocitat mitjana i recorregut, així que escapa al test de velocitat/avanç
+        # de dalt. Però delata que està quiet la immensa majoria de frames. Un
+        # ratpenat en vol es mou de forma contínua i mai està estàtic >80% del temps.
+        # El llindar de pas "estàtic" és una fracció de la diagonal (escala amb la
+        # resolució) i normalitzem per frames perduts entre deteccions consecutives.
+        if (
+            static_noise_filter_enabled
+            and static_noise_min_static_fraction > 0.0
+            and duration >= static_noise_min_duration_sec
+            and "static_noise" not in reject_reasons
+            and len(track_points) >= 2
+        ):
+            static_step_threshold = static_noise_static_step_ratio_per_frame * frame_diag
+            static_steps = 0
+            for i in range(1, len(track_points)):
+                frame_gap = track_points[i].frame - track_points[i - 1].frame
+                if frame_gap <= 0:
+                    frame_gap = 1
+                per_frame_speed = hypot(
+                    track_points[i].x - track_points[i - 1].x,
+                    track_points[i].y - track_points[i - 1].y,
+                ) / frame_gap
+                if per_frame_speed < static_step_threshold:
+                    static_steps += 1
+            total_steps = len(track_points) - 1
+            if total_steps > 0 and (static_steps / total_steps) >= static_noise_min_static_fraction:
                 reject_reasons.append("static_noise")
         # Discontinuïtat temporal: un track real és temporalment dens (els forats
         # entre deteccions consecutives no superen max_missed ni la tolerància de

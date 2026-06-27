@@ -71,6 +71,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "static_noise_min_duration_sec": 3.0,
         "static_noise_max_mean_speed_ratio_per_sec": 0.025,
         "static_noise_max_displacement_ratio_per_sec": 0.020,
+        "static_noise_min_static_fraction": 0.0,
+        "static_noise_static_step_ratio_per_frame": 0.0005,
         "max_track_internal_gap_frames": 45,
         "loiter_filter_enabled": True,
         "loiter_min_duration_sec": 10.0,

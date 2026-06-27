@@ -314,6 +314,44 @@ def test_static_noise_filter_rejects_sustained_slow_blob_but_keeps_active_track(
     assert "static_noise" not in assess_active[0]["reject_reasons"]
 
 
+def test_static_noise_filter_rejects_persistent_blob_with_teleport_jumps() -> None:
+    valid_mask = np.ones((720, 1280), dtype=np.uint8) * 255
+    cfg = _filter_cfg("annotate")
+    cfg.update(
+        {
+            "min_track_displacement": 0.0,
+            "min_track_path_length": 0.0,
+            "static_noise_filter_enabled": True,
+            "static_noise_min_duration_sec": 3.0,
+            # Velocidad/avance desactivados: forzamos que solo dispare la fraccion estatica.
+            "static_noise_max_mean_speed_ratio_per_sec": 0.0,
+            "static_noise_max_displacement_ratio_per_sec": 0.0,
+            "static_noise_min_static_fraction": 0.80,
+            "static_noise_static_step_ratio_per_frame": 0.0005,
+        }
+    )
+
+    # Blob fijo en (700,400) durante 16 s con saltos grandes esporadicos (teletransporte).
+    blob: List[TrackPoint] = []
+    for f in range(480):
+        if f % 60 == 0 and f > 0:
+            blob.append(_point(1, f, 700.0 + 180.0 * ((f // 60) % 2), 400.0))
+        else:
+            blob.append(_point(1, f, 700.0, 400.0))
+    kept_blob, assess_blob = _filter_track_points(blob, cfg, FPS, valid_mask=valid_mask)
+
+    assert kept_blob == []
+    assert assess_blob[0]["accepted"] is False
+    assert "static_noise" in assess_blob[0]["reject_reasons"]
+
+    # Murcielago real: se mueve en todos los frames (fraccion estatica baja).
+    flier = [_point(2, f, 200.0 + 8.0 * f, 360.0 + 4.0 * f) for f in range(120)]
+    kept_flier, assess_flier = _filter_track_points(flier, cfg, FPS, valid_mask=valid_mask)
+
+    assert {p.track_id for p in kept_flier} == {2}
+    assert "static_noise" not in assess_flier[0]["reject_reasons"]
+
+
 def test_temporal_gap_filter_rejects_stitched_fragments_but_keeps_dense_track() -> None:
     valid_mask = np.ones((720, 1280), dtype=np.uint8) * 255
     cfg = _filter_cfg("annotate")
