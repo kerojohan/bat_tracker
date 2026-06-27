@@ -203,6 +203,10 @@ Usa `config.yaml.example` como base.
   - `tracking.min_track_displacement`: desplazamiento neto minimo (pixeles)
   - `tracking.min_track_path_length`: recorrido acumulado minimo (pixeles)
   - `tracking.min_track_straightness`: rectitud minima `desplazamiento/recorrido` (0..1)
+  - `tracking.static_noise_filter_enabled`: activa el detector de "blob estatico" que descarta ruido fijo de larga duracion (reflejos, puntos calientes, vegetacion casi inmovil) que el tracker mantiene vivo y que acumula desplazamiento por saltos esporadicos (motivo de rechazo: `static_noise`). Solo rechaza un track cuando coinciden tres evidencias independientes a la vez, de modo que un murcielago real (rapido, o que avanza de verdad, o de duracion corta) no cae en el filtro. Todos los umbrales escalan con la diagonal del frame, asi que se adaptan a la resolucion del video
+  - `tracking.static_noise_min_duration_sec`: duracion minima (s) para considerar un track como posible blob estatico; tracks mas cortos nunca se descartan por este filtro (default: `3.0`)
+  - `tracking.static_noise_max_mean_speed_ratio_per_sec`: velocidad media de trayectoria por debajo de la cual (como fraccion de la diagonal por segundo) el track es candidato a ruido estatico (default: `0.025`)
+  - `tracking.static_noise_max_displacement_ratio_per_sec`: tasa de avance neto (`desplazamiento/duracion`, como fraccion de la diagonal por segundo) por debajo de la cual el track avanza poco para su duracion; es la segunda condicion que distingue ruido confinado de un vuelo lento pero que recorre distancia (default: `0.020`)
   - `tracking.require_start_or_end_in_valid_region`: conserva solo tracks que empiezan o acaban dentro de la mascara valida
   - `tracking.valid_region_gate_dilate_px`: dilata la mascara valida en pixeles antes de aplicar el filtro inicio/fin
   - `tracking.auto_merge_suggested`: fusion automatica postproceso de tracks potencialmente duplicados

@@ -282,6 +282,37 @@ def _filter_cfg(mode: str) -> dict:
     }
 
 
+def _static_noise_cfg() -> dict:
+    cfg = _filter_cfg("annotate")
+    cfg.update(
+        {
+            "static_noise_filter_enabled": True,
+            "static_noise_min_duration_sec": 3.0,
+            "static_noise_max_mean_speed_ratio_per_sec": 0.025,
+            "static_noise_max_displacement_ratio_per_sec": 0.020,
+        }
+    )
+    return cfg
+
+
+def test_static_noise_filter_rejects_sustained_slow_blob_but_keeps_active_track() -> None:
+    valid_mask = np.ones((720, 1280), dtype=np.uint8) * 255
+
+    slow_blob = [_point(1, f, 500.0 + 0.2 * f, 360.0) for f in range(101)]
+    kept_blob, assess_blob = _filter_track_points(slow_blob, _static_noise_cfg(), FPS, valid_mask=valid_mask)
+
+    assert kept_blob == []
+    assert assess_blob[0]["accepted"] is False
+    assert "static_noise" in assess_blob[0]["reject_reasons"]
+
+    active_track = [_point(2, f, 500.0 + (80.0 if f % 2 else 0.0), 360.0) for f in range(101)]
+    kept_active, assess_active = _filter_track_points(active_track, _static_noise_cfg(), FPS, valid_mask=valid_mask)
+
+    assert {p.track_id for p in kept_active} == {2}
+    assert assess_active[0]["accepted"] is True
+    assert "static_noise" not in assess_active[0]["reject_reasons"]
+
+
 def test_valid_region_require_start_or_end_rejects_out_of_gate_track_in_any_mode() -> None:
     # Mascara valida en una banda; un track que vive completamente fuera.
     mask = np.zeros((400, 400), dtype=np.uint8)

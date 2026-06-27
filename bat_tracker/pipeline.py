@@ -1086,6 +1086,10 @@ def _filter_track_points(
     min_track_displacement = float(tracking_cfg.get("min_track_displacement", 0.0))
     min_track_path_length = float(tracking_cfg.get("min_track_path_length", 0.0))
     min_track_straightness = float(tracking_cfg.get("min_track_straightness", 0.0))
+    static_noise_filter_enabled = bool(tracking_cfg.get("static_noise_filter_enabled", False))
+    static_noise_min_duration_sec = max(0.0, float(tracking_cfg.get("static_noise_min_duration_sec", 3.0)))
+    static_noise_max_mean_speed_ratio = max(0.0, float(tracking_cfg.get("static_noise_max_mean_speed_ratio_per_sec", 0.0)))
+    static_noise_max_displacement_ratio = max(0.0, float(tracking_cfg.get("static_noise_max_displacement_ratio_per_sec", 0.0)))
     require_start_or_end_in_valid_region = bool(tracking_cfg.get("require_start_or_end_in_valid_region", False))
     # Compat v1.1.11: si require_start_or_end_in_valid_region=true, el track
     # debe tocar la máscara (inicio o fin) independientemente de valid_region_mode.
@@ -1106,6 +1110,15 @@ def _filter_track_points(
         frame_w = int(max(2.0, max_x + 1.0))
         frame_h = int(max(2.0, max_y + 1.0))
     frame_diag = max(1.0, hypot(float(frame_w), float(frame_h)))
+    # Detector de "blob estàtic": descarta soroll fix de llarga durada (reflexos, punts
+    # calents, vegetació quasi immòbil) que un tracker manté viu i que acumula
+    # desplaçament per salts esporàdics. Tots els llindars escalen amb la diagonal del
+    # frame (fracció per segon), de manera que s'adapten a la resolució del vídeo.
+    # Només dispara quan coincideixen tres evidències independents (velocitat de
+    # trajectòria baixa + avanç net baix + durada sostinguda), de manera que un
+    # ratpenat real (ràpid, o que avança de debò, o de durada curta) no hi cau.
+    static_noise_max_mean_speed = static_noise_max_mean_speed_ratio * frame_diag
+    static_noise_max_displacement_rate = static_noise_max_displacement_ratio * frame_diag
 
     def _strip_vegetation_jitter(track_points: List[TrackPoint]) -> List[TrackPoint]:
         if vegetation_mask is None or not bool(vegetation_cfg.get("enabled", False)):
@@ -1234,6 +1247,15 @@ def _filter_track_points(
         if min_track_straightness > 0.0 and path_length > 0.0:
             if straightness < min_track_straightness:
                 reject_reasons.append("min_track_straightness")
+        if (
+            static_noise_filter_enabled
+            and duration >= static_noise_min_duration_sec
+            and static_noise_max_mean_speed > 0.0
+            and static_noise_max_displacement_rate > 0.0
+        ):
+            displacement_rate = displacement / duration if duration > 0.0 else 0.0
+            if mean_speed < static_noise_max_mean_speed and displacement_rate < static_noise_max_displacement_rate:
+                reject_reasons.append("static_noise")
 
         s_in = None
         e_in = None
