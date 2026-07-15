@@ -99,6 +99,7 @@ tracking:
   rescue_motion_min_straightness: 0.0
   rescue_motion_interaction_dilate_px: 0
   export_track_candidates: true
+  export_association_log: true
 fast_events:
   require_entry_or_exit: true
 valid_region:
@@ -107,7 +108,7 @@ valid_region:
   apply_to_detection: false
   hybrid_combine_mode: and
   input_image: ''
-  input_mask: 'mask_session42.png'
+  input_mask: ''
   context_start_sec: 0.0
   context_duration_sec: 75.0
   blur_kernel_size: 151
@@ -206,9 +207,10 @@ output:
   track_clips_padding_frames: 5
   trajectory_smoothing_enabled: false
   trajectory_smoothing_window: 5
-  cleanup_intermediate_outputs: true
+  export_motion_heatmap_overlay: false
+  cleanup_intermediate_outputs: false
 flight_trails:
-  enabled: true
+  enabled: false
   video_filename: flight_trails_overlay.mp4
   history_frames: 12
   max_track_gap_frames: 2

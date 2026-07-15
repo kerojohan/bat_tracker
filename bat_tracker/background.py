@@ -6,8 +6,7 @@ import cv2
 import numpy as np
 
 from .video import VideoMeta
-from .video import frame_to_gray
-from .video import open_video_capture
+from .video import read_gray_frames_at_indices
 
 
 def _sample_indices(
@@ -53,21 +52,14 @@ def compute_background_median(
     if indices.size == 0:
         raise RuntimeError("Video has zero frames")
 
-    cap = open_video_capture(video_path)
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video for background: {video_path}")
-
-    sampled: List[np.ndarray] = []
-    try:
-        for idx in indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-            ok, frame = cap.read()
-            if not ok:
-                continue
-            gray = frame_to_gray(frame)
-            sampled.append(gray)
-    finally:
-        cap.release()
+    constant_rate = abs(float(meta.fps) - round(float(meta.fps))) < 1e-6
+    frames = read_gray_frames_at_indices(
+        video_path,
+        indices,
+        sequential=True,
+        seek_from_index=None if constant_rate else max(1, int(meta.frame_count) // 2),
+    )
+    sampled: List[np.ndarray] = [frames[int(idx)] for idx in indices if int(idx) in frames]
 
     if not sampled:
         raise RuntimeError("Could not sample frames to compute background")

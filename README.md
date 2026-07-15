@@ -83,7 +83,33 @@ Aquí se muestran visualizaciones de las salidas generadas:
 Ejemplos de configuracion incluidos:
 
 - `config.yaml.example` (base)
-- `config.out3_clean.yaml` (perfil limpio para escenas tipo out3 con menos ruido)
+- `config.out3_clean.yaml` (perfil v1.1.31 optimizado y validado para las escenas out3)
+
+### Perfil v1.1.31 con paridad exacta
+
+`config.out3_clean.yaml` conserva los resultados de tracking de v1.1.31 y evita trabajo
+que no modifica `tracks.csv`. La comprobacion automatica sobre las ocho cuevas de
+referencia obtuvo los mismos 162 tracks y 4909 puntos, con igualdad byte por byte.
+El tiempo total medido paso de 682.6 s a 232.0 s: una aceleracion de 2.94x y una
+reduccion aproximada del 66 %.
+
+El perfil desactiva por defecto dos salidas visuales costosas que no participan en
+el tracking: `flight_trails_overlay.mp4` y `motion_heatmap_overlay.png`. Para
+generarlas, activa respectivamente `flight_trails.enabled: true` y
+`output.export_motion_heatmap_overlay: true`; los tracks no cambian.
+
+La paridad completa se puede repetir sin validacion visual. El directorio de
+referencia debe contener una subcarpeta por cueva con las salidas oficiales de
+v1.1.31:
+
+```bash
+uv run python scripts/benchmark_v1_1_31_parity.py \
+  --reference-root out_v1_1_31_phase1_20260715/baseline \
+  --output-root out_parity_nuevo
+```
+
+El proceso falla inmediatamente si cualquier `tracks.csv` difiere y escribe el
+informe reproducible en `benchmarks/v1_1_31_exact_parity.json`.
 
 ## Salidas
 
@@ -114,7 +140,7 @@ Se escriben en la carpeta indicada por `--output`:
 - `tracks_render.json`: export JSON con `width`, `height`, puntos por track y metadatos minimos (`track_id`, `frame_start`, `frame_end`, `duration_sec`, `direction`, `point_start`, `point_end`).
   - `direction` usa el vocabulario `entry`, `exit`, `inside`, `outside`, `unknown`.
 - `tracks_overlay.png`: trayectorias dibujadas sobre `background.png`.
-- `motion_heatmap_overlay.png`: fondo con el heatmap acumulado de movimiento del video.
+- `motion_heatmap_overlay.png` (opcional): fondo con el heatmap acumulado de movimiento del video cuando `output.export_motion_heatmap_overlay` esta activo.
 - `tracks_overlay_raw.png` y `tracks_overlay_smoothed.png` (opcionales): overlays adicionales cuando `output.trajectory_smoothing_enabled` esta activo.
 - `flight_trails_overlay.mp4` (opcional): video con estelas temporales superpuestas sobre el video original cuando `flight_trails.enabled` esta activo.
 - `track_clips/` (opcional): clips de video por track (`track_0001_000120-000186.mp4`, etc.).
@@ -151,7 +177,7 @@ Columnas exactas:
 8. Merge automatico opcional, conservador y no transitivo, de tracks fragmentados antes del filtrado final (con guardas anti-coexistencia y tope de grupo para no fundir murcielagos distintos).
 9. Evaluacion centralizada de tracks candidatos (score + motivos de rechazo) y export de `tracks.csv`, `events.csv`, `tracks.svg`, `tracks_render.json` y render final `tracks_overlay.png`.
 10. Export opcional de `flight_trails_overlay.mp4` con estelas temporales acumuladas sobre el video original si `flight_trails.enabled`.
-11. Generacion de `motion_heatmap_overlay.png` con el fondo y el heatmap acumulado de movimiento del video.
+11. Generacion opcional de `motion_heatmap_overlay.png` con el fondo y el heatmap acumulado de movimiento del video.
 12. Si `valid_region.enabled`, calculo de banda vertical valida desde iluminacion horizontal y guardado en `valid_region/*`.
 13. Export de `meta.json` con parametros, metadatos y metricas.
    - incluye `postprocess.auto_merges_applied` cuando `tracking.auto_merge_suggested` esta activo.

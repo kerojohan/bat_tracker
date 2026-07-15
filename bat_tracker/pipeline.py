@@ -51,7 +51,7 @@ from .valid_region import load_image as load_valid_region_image
 from .valid_region import load_mask as load_valid_region_mask
 from .valid_region import run_valid_region
 from .valid_region import save_precomputed_mask_outputs
-from .video import iter_gray_frames, read_video_meta
+from .video import iter_gray_frames, read_gray_frames_at_indices, read_video_meta
 
 # Two OpenCV worker threads gave the best real pipeline wall time on the
 # validated CPU benchmark videos. Higher values improved some isolated kernels
@@ -95,6 +95,22 @@ def _valid_region_context_bounds(meta, valid_region_cfg: Dict, background_cfg: D
     return start_frame, end_frame
 
 
+def _same_effective_context(
+    left: tuple[int, int | None],
+    right: tuple[int, int | None],
+    frame_count: int,
+) -> bool:
+    """Return whether two context ranges select the same real video frames."""
+
+    last_frame = max(0, int(frame_count) - 1)
+
+    def _effective(bounds: tuple[int, int | None]) -> tuple[int, int]:
+        start, end = bounds
+        return max(0, min(int(start), last_frame)), min(last_frame, last_frame if end is None else int(end))
+
+    return _effective(left) == _effective(right)
+
+
 def _compute_auto_vegetation_mask(
     video_path: str,
     meta,
@@ -104,51 +120,45 @@ def _compute_auto_vegetation_mask(
     percentile: float = 85.0,
     min_component_area: int = 24,
 ) -> np.ndarray:
-    cap = cv2.VideoCapture(video_path)
-    if not cap.isOpened():
-        raise RuntimeError(f"Cannot open video for vegetation mask estimation: {video_path}")
-    try:
-        n = max(1, int(meta.frame_count))
-        stop = min(n - 1, max_frame_for_sampling)
-        idxs = np.linspace(0, stop, max(20, sample_frames), dtype=int)
-        frames: List[np.ndarray] = []
-        for idx in idxs:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, int(idx))
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                continue
-            frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
-        if len(frames) < 20:
-            return np.zeros((meta.height, meta.width), dtype=np.uint8)
+    n = max(1, int(meta.frame_count))
+    stop = min(n - 1, max_frame_for_sampling)
+    idxs = np.linspace(0, stop, max(20, sample_frames), dtype=int)
+    constant_rate = abs(float(meta.fps) - round(float(meta.fps))) < 1e-6
+    sampled = read_gray_frames_at_indices(
+        video_path,
+        idxs,
+        sequential=True,
+        seek_from_index=None if constant_rate else max(1, int(meta.frame_count) // 2),
+    )
+    frames: List[np.ndarray] = [sampled[int(idx)] for idx in idxs if int(idx) in sampled]
+    if len(frames) < 20:
+        return np.zeros((meta.height, meta.width), dtype=np.uint8)
 
-        stack = np.stack(frames, axis=0).astype(np.float32)
-        activity = np.mean(np.abs(np.diff(stack, axis=0)), axis=0)
-        tstd = np.std(stack, axis=0)
-        median = np.median(stack, axis=0).astype(np.uint8)
-        gx = cv2.Sobel(median, cv2.CV_32F, 1, 0, ksize=3)
-        gy = cv2.Sobel(median, cv2.CV_32F, 0, 1, ksize=3)
-        grad = np.sqrt(gx * gx + gy * gy)
+    stack = np.stack(frames, axis=0).astype(np.float32)
+    activity = np.mean(np.abs(np.diff(stack, axis=0)), axis=0)
+    tstd = np.std(stack, axis=0)
+    median = np.median(stack, axis=0).astype(np.uint8)
+    gx = cv2.Sobel(median, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(median, cv2.CV_32F, 0, 1, ksize=3)
+    grad = np.sqrt(gx * gx + gy * gy)
 
-        an = (activity - activity.min()) / (float(np.ptp(activity)) + 1e-6)
-        sn = (tstd - tstd.min()) / (float(np.ptp(tstd)) + 1e-6)
-        gn = (grad - grad.min()) / (float(np.ptp(grad)) + 1e-6)
-        score = 0.50 * an + 0.35 * sn + 0.15 * gn
-        thr = float(np.percentile(score, float(np.clip(percentile, 50.0, 99.5))))
-        mask = np.where(score >= thr, 255, 0).astype(np.uint8)
+    an = (activity - activity.min()) / (float(np.ptp(activity)) + 1e-6)
+    sn = (tstd - tstd.min()) / (float(np.ptp(tstd)) + 1e-6)
+    gn = (grad - grad.min()) / (float(np.ptp(grad)) + 1e-6)
+    score = 0.50 * an + 0.35 * sn + 0.15 * gn
+    thr = float(np.percentile(score, float(np.clip(percentile, 50.0, 99.5))))
+    mask = np.where(score >= thr, 255, 0).astype(np.uint8)
 
-        k3 = np.ones((3, 3), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k3, iterations=1)
-        mask = cv2.medianBlur(mask, 3)
-        num, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)
-        clean = np.zeros_like(mask)
-        for i in range(1, num):
-            area = int(stats[i, cv2.CC_STAT_AREA])
-            if area >= max(1, min_component_area):
-                clean[labels == i] = 255
-        mask = cv2.erode(clean, k3, iterations=1)
-        return mask
-    finally:
-        cap.release()
+    k3 = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k3, iterations=1)
+    mask = cv2.medianBlur(mask, 3)
+    num, labels, stats, _ = cv2.connectedComponentsWithStats((mask > 0).astype(np.uint8), 8)
+    clean = np.zeros_like(mask)
+    for i in range(1, num):
+        area = int(stats[i, cv2.CC_STAT_AREA])
+        if area >= max(1, min_component_area):
+            clean[labels == i] = 255
+    return cv2.erode(clean, k3, iterations=1)
 
 
 def _save_vegetation_mask_overlay(
@@ -2390,6 +2400,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     fast_events_enabled = bool(cfg.get("fast_events", {}).get("enabled", False))
     heatmap_events_enabled = bool(cfg.get("heatmap_events", {}).get("enabled", False))
     flight_trails_enabled = bool(cfg.get("flight_trails", {}).get("enabled", False))
+    export_motion_heatmap_overlay = bool(cfg["output"].get("export_motion_heatmap_overlay", True))
     progress = ProgressReporter(
         enabled=bool(cfg["output"].get("progress_enabled", True)),
         step_percent=int(cfg["output"].get("progress_step_percent", 5)),
@@ -2494,7 +2505,11 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
                 valid_image = load_valid_region_image(valid_input)
             else:
                 vr_context_start, vr_context_end = _valid_region_context_bounds(meta, valid_region_cfg, cfg["background"])
-                if vr_context_start == background_context_start and vr_context_end == background_context_end:
+                if _same_effective_context(
+                    (vr_context_start, vr_context_end),
+                    (background_context_start, background_context_end),
+                    meta.frame_count,
+                ):
                     valid_image = background
                 else:
                     valid_image = compute_background_median(
@@ -2596,6 +2611,19 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
     motion_heatmap_cfg = cfg.get("heatmap_events", {})
     motion_heatmap_blur_kernel = int(motion_heatmap_cfg.get("blur_kernel", 5))
     motion_heatmap_threshold = int(motion_heatmap_cfg.get("threshold", 14))
+    entry_exit_source = str(cfg["tracking"].get("entry_exit_zone_source", "auto")).strip().lower()
+    candidate_sources = sum(
+        (
+            bool(valid_gate_mask is not None),
+            cave_zones_enabled,
+            bool(cfg.get("cavemark", {}).get("enabled", False)),
+        )
+    )
+    motion_heatmap_required = (
+        export_motion_heatmap_overlay
+        or (cave_zones_enabled and bool(cave_zones_cfg.get("use_motion_heatmap", True)))
+        or (entry_exit_source == "auto" and candidate_sources > 1)
+    )
 
     all_points: List[TrackPoint] = []
     frame_processed = 0
@@ -2604,7 +2632,7 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
 
     for frame_idx, gray in iter_gray_frames(input_video, perf=perf):
         frame_started = perf_counter()
-        if motion_heatmap_previous_gray is not None:
+        if motion_heatmap_required and motion_heatmap_previous_gray is not None:
             _accumulate_motion_heatmap(
                 motion_heatmap,
                 motion_heatmap_previous_gray,
@@ -2612,7 +2640,8 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
                 blur_kernel=motion_heatmap_blur_kernel,
                 threshold=motion_heatmap_threshold,
             )
-        motion_heatmap_previous_gray = gray
+        if motion_heatmap_required:
+            motion_heatmap_previous_gray = gray
         dets = detect_foreground_blobs(
             gray,
             background,
@@ -3193,7 +3222,8 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         }
 
     motion_heatmap_overlay_path = out_dir / "motion_heatmap_overlay.png"
-    _save_motion_heatmap_overlay(background, motion_heatmap, motion_heatmap_overlay_path)
+    if export_motion_heatmap_overlay:
+        _save_motion_heatmap_overlay(background, motion_heatmap, motion_heatmap_overlay_path)
 
     outputs_payload = {
         "background_png": str(background_path.resolve()),
@@ -3202,7 +3232,9 @@ def run_pipeline(input_video: str, output_dir: str, config_path: str | None = No
         "tracks_svg": str(tracks_svg_path.resolve()),
         "tracks_render_json": str(tracks_render_json_path.resolve()),
         "tracks_overlay_png": str(overlay_path.resolve()),
-        "motion_heatmap_overlay_png": str(motion_heatmap_overlay_path.resolve()),
+        "motion_heatmap_overlay_png": (
+            str(motion_heatmap_overlay_path.resolve()) if export_motion_heatmap_overlay else ""
+        ),
         **cave_zones_outputs,
         **cavemark_outputs,
         **detection_debug_outputs,

@@ -5,7 +5,7 @@ from pathlib import Path
 from queue import Queue
 from threading import Thread
 from time import perf_counter
-from typing import Generator, Tuple
+from typing import Generator, Iterable, Tuple
 
 import cv2
 import numpy as np
@@ -60,6 +60,62 @@ def read_video_meta(path: str | Path) -> VideoMeta:
         width=width,
         height=height,
     )
+
+
+def read_gray_frames_at_indices(
+    path: str | Path,
+    indices: Iterable[int],
+    *,
+    sequential: bool = True,
+    seek_from_index: int | None = None,
+) -> dict[int, np.ndarray]:
+    """Decode requested frames in one forward pass.
+
+    Repeated ``CAP_PROP_POS_FRAMES`` seeks are disproportionately expensive on
+    inter-frame codecs because every seek may decode from an earlier keyframe.
+    The sampling stages request hundreds of frames from short cave videos, so a
+    single sequential pass is both faster and returns the same decoded pixels.
+    """
+
+    targets = sorted({max(0, int(index)) for index in indices})
+    if not targets:
+        return {}
+    cap = open_video_capture(path)
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot open video: {path}")
+    frames: dict[int, np.ndarray] = {}
+    if not sequential:
+        try:
+            for target in targets:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, target)
+                ok, frame = cap.read()
+                if ok:
+                    frames[target] = frame_to_gray(frame)
+        finally:
+            cap.release()
+        return frames
+
+    target_position = 0
+    frame_idx = 0
+    last_target = targets[-1]
+    try:
+        while frame_idx <= last_target:
+            ok, frame = cap.read()
+            if not ok:
+                break
+            if frame_idx == targets[target_position]:
+                frames[frame_idx] = frame_to_gray(frame)
+                target_position += 1
+                if target_position >= len(targets):
+                    break
+            frame_idx += 1
+    finally:
+        cap.release()
+    if seek_from_index is not None:
+        late_targets = [target for target in targets if target >= int(seek_from_index)]
+        if late_targets:
+            frames.update(read_gray_frames_at_indices(path, late_targets, sequential=False))
+    return frames
 
 
 def iter_gray_frames(

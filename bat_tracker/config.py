@@ -296,6 +296,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "track_clips_padding_frames": 0,
         "trajectory_smoothing_enabled": False,
         "trajectory_smoothing_window": 5,
+        "export_motion_heatmap_overlay": True,
         "cleanup_intermediate_outputs": True,
     },
 }
@@ -358,6 +359,12 @@ def _validate_config(cfg: Dict[str, Any]) -> None:
         raise ValueError(
             "output.cleanup_intermediate_outputs must be a boolean, "
             f"got: {cleanup_intermediate_outputs!r}"
+        )
+    export_motion_heatmap_overlay = output.get("export_motion_heatmap_overlay", True)
+    if not isinstance(export_motion_heatmap_overlay, bool):
+        raise ValueError(
+            "output.export_motion_heatmap_overlay must be a boolean, "
+            f"got: {export_motion_heatmap_overlay!r}"
         )
 
     detection = cfg.get("detection", {})
