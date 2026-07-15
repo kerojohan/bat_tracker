@@ -1,10 +1,10 @@
 {
   "version": 1,
-  "created_at": "2026-07-15T16:45:11.459503+00:00",
+  "created_at": "2026-07-15T17:01:08.299549+00:00",
   "reference_commit": "d208d80e4603f523776bcb8d06a861ac73c78b80",
   "reference_name": "v1.1.31-out3-clean",
   "config": "/home/jcaparros/Projectes/JOAN/bat_tracker/config.out3_clean.yaml",
-  "config_sha256": "1d79ae73a6996df012bbce2ea598092a0bcad7759ad749171e6261941331766b",
+  "config_sha256": "4315da52eca6c5bf05455a1eb4945af1f9096121a50010266ed3396013aa8670",
   "contract": "tracks.csv byte-for-byte equality for every cave",
   "all_exact": true,
   "reference_tracks_total": 162,
@@ -12,8 +12,8 @@
   "reference_points_total": 4909,
   "candidate_points_total": 4909,
   "baseline_wall_sec_total": 682.6435004379996,
-  "optimized_wall_sec_total": 232.0142277880077,
-  "overall_speedup": 2.942248442891759,
+  "optimized_wall_sec_total": 259.82374170700496,
+  "overall_speedup": 2.627333037208721,
   "caves": [
     {
       "cave": "cova2",
@@ -25,8 +25,8 @@
       "reference_points": 82,
       "candidate_points": 82,
       "baseline_wall_sec": 60.9290023489998,
-      "optimized_wall_sec": 20.21206915700168,
-      "speedup": 3.0144861407172328
+      "optimized_wall_sec": 21.19528192400321,
+      "speedup": 2.874649300134998
     },
     {
       "cave": "rabella",
@@ -38,8 +38,8 @@
       "reference_points": 135,
       "candidate_points": 135,
       "baseline_wall_sec": 65.04620634000003,
-      "optimized_wall_sec": 21.089269521005917,
-      "speedup": 3.0843271396958962
+      "optimized_wall_sec": 27.965118323998468,
+      "speedup": 2.325976439162074
     },
     {
       "cave": "foric",
@@ -51,8 +51,8 @@
       "reference_points": 501,
       "candidate_points": 501,
       "baseline_wall_sec": 111.00677749599981,
-      "optimized_wall_sec": 37.00378080899827,
-      "speedup": 2.9998766360924423
+      "optimized_wall_sec": 41.20114304600429,
+      "speedup": 2.694264510381474
     },
     {
       "cave": "bora_tuna",
@@ -64,8 +64,8 @@
       "reference_points": 49,
       "candidate_points": 49,
       "baseline_wall_sec": 55.54565696000009,
-      "optimized_wall_sec": 19.535679109998455,
-      "speedup": 2.8432928616017015
+      "optimized_wall_sec": 21.885568183999567,
+      "speedup": 2.538003879680366
     },
     {
       "cave": "bofia_sant_jaume",
@@ -77,8 +77,8 @@
       "reference_points": 1717,
       "candidate_points": 1717,
       "baseline_wall_sec": 112.63094375499986,
-      "optimized_wall_sec": 37.64501358100097,
-      "speedup": 2.991921984903825
+      "optimized_wall_sec": 41.64701061199594,
+      "speedup": 2.7044184468442456
     },
     {
       "cave": "senioles",
@@ -90,8 +90,8 @@
       "reference_points": 117,
       "candidate_points": 117,
       "baseline_wall_sec": 100.6759636920001,
-      "optimized_wall_sec": 36.4673712540025,
-      "speedup": 2.7607134879772923
+      "optimized_wall_sec": 40.34847631699813,
+      "speedup": 2.4951614752695632
     },
     {
       "cave": "crespia",
@@ -103,8 +103,8 @@
       "reference_points": 2077,
       "candidate_points": 2077,
       "baseline_wall_sec": 69.99019379099991,
-      "optimized_wall_sec": 21.584851979998348,
-      "speedup": 3.2425607484293377
+      "optimized_wall_sec": 23.607891143001325,
+      "speedup": 2.9646948711786503
     },
     {
       "cave": "carradon",
@@ -116,8 +116,8 @@
       "reference_points": 231,
       "candidate_points": 231,
       "baseline_wall_sec": 106.818756055,
-      "optimized_wall_sec": 38.47619237600156,
-      "speedup": 2.77622990890401
+      "optimized_wall_sec": 41.973252157004026,
+      "speedup": 2.544924459401826
     }
   ]
 }

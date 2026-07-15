@@ -90,13 +90,13 @@ Ejemplos de configuracion incluidos:
 `config.out3_clean.yaml` conserva los resultados de tracking de v1.1.31 y evita trabajo
 que no modifica `tracks.csv`. La comprobacion automatica sobre las ocho cuevas de
 referencia obtuvo los mismos 162 tracks y 4909 puntos, con igualdad byte por byte.
-El tiempo total medido paso de 682.6 s a 232.0 s: una aceleracion de 2.94x y una
-reduccion aproximada del 66 %.
+El tiempo total medido paso de 682.6 s a 259.8 s: una aceleracion de 2.63x y una
+reduccion aproximada del 62 %, conservando el heatmap visual como salida.
 
-El perfil desactiva por defecto dos salidas visuales costosas que no participan en
-el tracking: `flight_trails_overlay.mp4` y `motion_heatmap_overlay.png`. Para
-generarlas, activa respectivamente `flight_trails.enabled: true` y
-`output.export_motion_heatmap_overlay: true`; los tracks no cambian.
+El perfil mantiene `motion_heatmap_overlay.png` como salida visual y desactiva por
+defecto solamente la generacion del costoso `flight_trails_overlay.mp4`, que no
+participa en el tracking. Para generar tambien ese video, activa
+`flight_trails.enabled: true`; los tracks no cambian.
 
 La paridad completa se puede repetir sin validacion visual. El directorio de
 referencia debe contener una subcarpeta por cueva con las salidas oficiales de

@@ -207,7 +207,7 @@ output:
   track_clips_padding_frames: 5
   trajectory_smoothing_enabled: false
   trajectory_smoothing_window: 5
-  export_motion_heatmap_overlay: false
+  export_motion_heatmap_overlay: true
   cleanup_intermediate_outputs: false
 flight_trails:
   enabled: false
